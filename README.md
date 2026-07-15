@@ -1,43 +1,73 @@
 # EBICSMIT
 
-EBICSMIT is an early, clean-room Python scaffold for structurally read-only
-EBICS access. Its intended scope is retrieving account information and bank
-metadata. It does not provide payment initiation, file upload, or BTU support.
+An independent, MIT-licensed, read-only Python client for EBICS 3.0/H005.
 
 > [!WARNING]
-> This repository is a design scaffold, not a production-ready EBICS client.
-> It currently performs no network or cryptographic operations.
+> EBICSMIT is pre-alpha foundation work, not a usable or production-ready EBICS
+> client. It has not completed cryptographic implementation or bank
+> interoperability testing.
 
-## Safety boundary
+EBICSMIT is an independent open-source project. It is not affiliated with or
+endorsed by EBICS SC, the Massachusetts Institute of Technology, or any
+financial institution.
 
-The public API is deliberately narrow:
+EBICS is a registered trademark of EBICS SC. The name is used descriptively to
+identify the published protocol. This project uses no EBICS, “Ready for EBICS”,
+MIT, or bank logos and makes no certification or conformance claim.
 
-- `ReadOnlyClient` exposes only `download()`.
-- Requests can represent only account-information or bank-metadata retrieval.
-- A caller-provided policy must explicitly approve every retrieval capability.
-- The default policy approves nothing.
-- Raw EBICS order types are not part of the public API.
-- The transport protocol has no upload, submit, or payment method.
+## Boundary
 
-This is defense in depth, not a claim that the scaffold already implements the
-EBICS protocol. See [Scope](docs/scope.md) and
-[Clean-room policy](docs/clean-room.md) before contributing.
+The library is direct user-to-bank and application-neutral. It has no hosted
+proxy, API keys, registration, license service, telemetry, credential cloud,
+database, scheduler, persistent keyring, UI, accounting policy, or ISO 20022
+document interpretation.
+
+The fixed operation set is HEV, INI, HIA, HPB, HPD, HAA, HKD, HTD, and BTD.
+There is no BTU, business upload, payment initiation, pain.001, direct debit,
+EDS/VEU, or generic raw-order method. INI and HIA initialize subscriber keys;
+they cannot carry business documents.
+
+Current foundation APIs provide:
+
+- immutable bank, subscriber, BTF, date, account, capability, and result models;
+- injected key, bank-key trust, transport, clock, nonce, and session protocols;
+- explicit out-of-band bank-key fingerprint acceptance;
+- HTTPS-only TLS 1.2+ transport with certificate verification, no redirects, and
+  bounded responses;
+- an XML parser boundary that rejects DTDs, entities, XInclude, recovery,
+  duplicate IDs, and configured resource-limit violations;
+- synthetic deterministic testing helpers that must never hold production
+  secrets.
+
+Exact H000/H005 envelopes, signatures, encryption, segmented BTD transactions,
+receipts, and return-code handling are not implemented yet.
 
 ## Development
 
-The scaffold has no runtime dependencies. Run its checks with Python 3.11 or
-newer:
+Python 3.10 or newer is supported.
 
 ```console
-PYTHONPATH=src python -m unittest discover -s tests -v
-python -m compileall -q src tests
+python -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m ruff format --check .
+.venv/bin/python -m ruff check .
+.venv/bin/python -m mypy
+.venv/bin/python -m pytest
+.venv/bin/python -m build
 ```
 
-## Licensing and affiliation
+Read [Architecture](docs/architecture.md), [Threat model](docs/threat-model.md),
+[Protocol scope](docs/protocol-scope.md), and
+[Clean-room sources](docs/clean-room-sources.md) before contributing.
 
-EBICSMIT is licensed under the [MIT License](LICENSE). It is an independent
-project and is not affiliated with or endorsed by the EBICS SCRL or its
-members. EBICS names and marks belong to their respective owners.
+## Security evidence
 
-Official EBICS schemas and code lists are intentionally not vendored. They
-will remain absent until their redistribution terms have been clarified.
+All current protocol fixtures are original and synthetic. No live-bank evidence
+exists. No external human security audit has been performed. Agent review is
+recorded as agent review and is not described as an independent security audit.
+
+## License
+
+EBICSMIT is licensed under the [MIT License](LICENSE). Official EBICS
+specifications, schemas, implementation guides, annexes, and code lists are not
+included and are not covered by this license.

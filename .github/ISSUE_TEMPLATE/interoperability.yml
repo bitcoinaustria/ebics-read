@@ -1,0 +1,29 @@
+name: Interoperability report
+description: Report sanitized H005 behavior without customer or financial data.
+title: "[Interop] "
+labels: [interoperability]
+body:
+  - type: markdown
+    attributes:
+      value: Never include credentials, participant IDs, transaction IDs, certificates, XML, or downloaded documents.
+  - type: input
+    id: country
+    attributes:
+      label: Country and bank product family
+      description: Omit branch, account, endpoint, and participant identifiers.
+    validations:
+      required: true
+  - type: dropdown
+    id: operation
+    attributes:
+      label: Operation
+      options: [HEV, INI, HIA, HPB, HPD, HAA, HKD, HTD, BTD]
+    validations:
+      required: true
+  - type: textarea
+    id: observation
+    attributes:
+      label: Sanitized observation
+      description: Describe behavior and return-code class without pasting messages.
+    validations:
+      required: true

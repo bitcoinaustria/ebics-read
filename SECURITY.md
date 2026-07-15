@@ -1,12 +1,15 @@
-# Security
+# Security policy
 
-EBICSMIT is not ready for production use. The initial scaffold performs no
-network requests, key management, signing, encryption, or EBICS message
-processing.
+EBICSMIT is pre-alpha and must not be used for production banking.
 
-Please report suspected vulnerabilities privately through GitHub's security
-advisory feature. Do not include bank credentials, customer data, private keys,
-or production EBICS material in a report.
+Report suspected vulnerabilities through
+[GitHub private vulnerability reporting](https://github.com/bitcoinaustria/ebicsmit/security/advisories/new).
+Do not open a public issue for an exploitable discrepancy.
 
-The absence of upload and payment APIs is an intentional security property.
-Changes that weaken this boundary are out of scope.
+Never include bank credentials, endpoints, participant IDs, account data,
+private keys, certificates, nonces, transaction IDs, protocol XML, or downloaded
+documents in a report. Construct the smallest synthetic reproduction instead.
+
+The project currently has no supported release and therefore no security-update
+window. Maintainers will acknowledge a valid private report when repository
+operations permit. No external human security audit has been performed.

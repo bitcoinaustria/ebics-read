@@ -1,65 +1,206 @@
 from __future__ import annotations
 
-import unittest
+import inspect
 from dataclasses import dataclass, field
+
+import pytest
 
 import ebicsmit
 from ebicsmit import (
-    DownloadRequest,
-    DownloadResult,
-    ExplicitReadOnlyPolicy,
-    OrderNotAllowedError,
+    Bank,
+    BankKeyFingerprints,
+    BtfDescriptor,
+    CapabilityDiscovery,
+    ContainerType,
+    DownloadedDocument,
+    DownloadOptions,
+    InitializationLetter,
+    KeyFingerprint,
+    OrderType,
+    ProtocolVersion,
     ReadOnlyClient,
-    RetrievalKind,
+    Subscriber,
+    TrustedBankKeys,
+    UntrustedBankKeys,
+    VersionDiscovery,
 )
+from ebicsmit.testing import InMemoryBankKeyTrustStore
 
 
-@dataclass
-class RecordingDownloadTransport:
-    requests: list[DownloadRequest] = field(default_factory=list)
+@dataclass(slots=True)
+class RecordingBackend:
+    calls: list[str] = field(default_factory=list)
 
-    def download(self, request: DownloadRequest) -> DownloadResult:
-        self.requests.append(request)
-        return DownloadResult(content=b"original-test-fixture")
+    def probe_versions(self, bank: Bank) -> VersionDiscovery:
+        self.calls.append("HEV")
+        return VersionDiscovery((ProtocolVersion("H005", "3.0"),))
+
+    def initialize_signature_key(
+        self, bank: Bank, subscriber: Subscriber
+    ) -> InitializationLetter:
+        self.calls.append("INI")
+        return InitializationLetter(
+            OrderType.INI, b"synthetic-letter", (KeyFingerprint("A" * 64),)
+        )
+
+    def initialize_auth_encryption_keys(
+        self, bank: Bank, subscriber: Subscriber
+    ) -> InitializationLetter:
+        self.calls.append("HIA")
+        return InitializationLetter(
+            OrderType.HIA, b"synthetic-letter", (KeyFingerprint("B" * 64),)
+        )
+
+    def fetch_bank_keys(self, bank: Bank, subscriber: Subscriber) -> UntrustedBankKeys:
+        self.calls.append("HPB")
+        return UntrustedBankKeys(b"synthetic-auth-cert", b"synthetic-enc-cert")
+
+    def discover_capabilities(
+        self,
+        bank: Bank,
+        subscriber: Subscriber,
+        trusted_bank_keys: TrustedBankKeys,
+    ) -> CapabilityDiscovery:
+        self.calls.append("DISCOVERY")
+        return CapabilityDiscovery(completed_orders=(OrderType.HAA,))
+
+    def download(
+        self,
+        bank: Bank,
+        subscriber: Subscriber,
+        trusted_bank_keys: TrustedBankKeys,
+        descriptor: BtfDescriptor,
+        options: DownloadOptions,
+    ) -> tuple[DownloadedDocument, ...]:
+        self.calls.append("BTD")
+        return (
+            DownloadedDocument(
+                service_name=descriptor.service_name,
+                scope=descriptor.scope,
+                message_name=descriptor.message_name,
+                message_version=descriptor.message_version,
+                variant=descriptor.variant,
+                format=descriptor.format,
+                service_option=descriptor.service_option,
+                container_type=descriptor.container_type,
+                content=b"opaque-synthetic-document",
+            ),
+        )
 
 
-class ReadOnlyBoundaryTests(unittest.TestCase):
-    def test_default_policy_denies_every_order(self) -> None:
-        transport = RecordingDownloadTransport()
-        client = ReadOnlyClient(transport, ExplicitReadOnlyPolicy())
-
-        with self.assertRaises(OrderNotAllowedError):
-            client.download(DownloadRequest(RetrievalKind.ACCOUNT_INFORMATION))
-
-        self.assertEqual(transport.requests, [])
-
-    def test_explicit_policy_allows_download(self) -> None:
-        transport = RecordingDownloadTransport()
-        policy = ExplicitReadOnlyPolicy.from_kinds([RetrievalKind.ACCOUNT_INFORMATION])
-        client = ReadOnlyClient(transport, policy)
-
-        result = client.download(DownloadRequest(RetrievalKind.ACCOUNT_INFORMATION))
-
-        self.assertEqual(result.content, b"original-test-fixture")
-        self.assertEqual(transport.requests[0].kind, RetrievalKind.ACCOUNT_INFORMATION)
-
-    def test_raw_order_type_cannot_be_requested(self) -> None:
-        with self.assertRaises(TypeError):
-            DownloadRequest("BTU")  # type: ignore[arg-type]
-
-    def test_raw_order_type_cannot_be_added_to_policy(self) -> None:
-        with self.assertRaises(TypeError):
-            ExplicitReadOnlyPolicy(frozenset({"BTU"}))  # type: ignore[arg-type]
-
-    def test_public_api_has_no_write_operations(self) -> None:
-        forbidden_names = {"upload", "submit", "send_payment", "btu"}
-
-        self.assertTrue(forbidden_names.isdisjoint(ebicsmit.__all__))
-        for name in forbidden_names:
-            self.assertFalse(hasattr(ReadOnlyClient, name))
-
-        self.assertNotIn("BTU", RetrievalKind.__members__)
+@pytest.fixture
+def descriptor() -> BtfDescriptor:
+    return BtfDescriptor(
+        service_name="EOP",
+        scope="AT",
+        message_name="camt.053",
+        message_version="08",
+        variant="001",
+        format="XML",
+        service_option="STM",
+        container_type=ContainerType.ZIP,
+    )
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.fixture
+def client() -> tuple[ReadOnlyClient, RecordingBackend]:
+    backend = RecordingBackend()
+    value = ReadOnlyClient(
+        Bank("https://bank.invalid/ebics", "HOST"),
+        Subscriber("PARTNER", "USER"),
+        backend,
+        InMemoryBankKeyTrustStore(),
+    )
+    return value, backend
+
+
+def test_exact_order_allowlist_rejects_every_prohibited_order() -> None:
+    assert {order.value for order in OrderType} == {
+        "HEV",
+        "INI",
+        "HIA",
+        "HPB",
+        "HPD",
+        "HAA",
+        "HKD",
+        "HTD",
+        "BTD",
+    }
+    for prohibited in (
+        "BTU",
+        "HCA",
+        "HCS",
+        "SPR",
+        "VEU",
+        "EDS",
+        "pain.001",
+        "UPLOAD",
+    ):
+        with pytest.raises(ValueError):
+            OrderType(prohibited)
+
+
+def test_public_client_has_only_explicit_protocol_operations() -> None:
+    methods = {
+        name
+        for name, value in inspect.getmembers(ReadOnlyClient, inspect.isfunction)
+        if not name.startswith("_")
+    }
+    assert methods == {
+        "accept_bank_keys",
+        "discover_capabilities",
+        "download",
+        "fetch_bank_keys",
+        "initialize_auth_encryption_keys",
+        "initialize_signature_key",
+        "probe_versions",
+    }
+    forbidden = {
+        "execute",
+        "execute_order",
+        "raw_request",
+        "request",
+        "send",
+        "submit",
+        "upload",
+        "send_payment",
+        "btu",
+    }
+    assert forbidden.isdisjoint(ebicsmit.__all__)
+
+
+def test_initialization_is_explicit_and_not_a_business_upload(
+    client: tuple[ReadOnlyClient, RecordingBackend],
+) -> None:
+    value, backend = client
+    assert value.probe_versions().versions[0].protocol_version == "H005"
+    assert value.initialize_signature_key().order is OrderType.INI
+    assert value.initialize_auth_encryption_keys().order is OrderType.HIA
+    assert backend.calls == ["HEV", "INI", "HIA"]
+
+
+def test_hpb_keys_are_untrusted_until_oob_acceptance(
+    client: tuple[ReadOnlyClient, RecordingBackend], descriptor: BtfDescriptor
+) -> None:
+    value, backend = client
+    candidate = value.fetch_bank_keys()
+
+    with pytest.raises(ebicsmit.BankKeyNotTrustedError):
+        value.download(descriptor)
+    assert backend.calls == ["HPB"]
+
+    expected = BankKeyFingerprints(
+        candidate.fingerprints.authentication,
+        candidate.fingerprints.encryption,
+    )
+    value.accept_bank_keys(candidate, expected)
+    documents = value.download(descriptor)
+
+    assert documents[0].content == b"opaque-synthetic-document"
+    assert backend.calls == ["HPB", "BTD"]
+
+
+def test_generic_request_parameter_mapping_no_longer_exists() -> None:
+    assert "DownloadRequest" not in ebicsmit.__all__
+    assert not hasattr(ebicsmit, "DownloadRequest")
+    assert "parameters" not in inspect.signature(BtfDescriptor).parameters

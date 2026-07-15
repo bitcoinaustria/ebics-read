@@ -1,19 +1,24 @@
 # Contributing
 
-EBICSMIT is a clean-room project. Contributions must preserve its read-only
-boundary and document their information sources.
+Read `AGENTS.md`, `docs/clean-room-sources.md`, `docs/protocol-scope.md`, and
+`docs/threat-model.md` before changing protocol code.
 
-Before opening a change:
+Every contribution must:
 
-1. Read `docs/clean-room.md` and `docs/scope.md`.
-2. Do not inspect or derive code from a nonfree EBICS implementation.
-3. Record protocol sources in `docs/provenance.md` before implementing from
-   them.
-4. Do not add payment initiation, uploads, BTU, or a generic order execution
-   escape hatch.
-5. Do not commit official schemas or code lists unless their redistribution
-   rights have been documented and approved for this repository.
-6. Add tests that demonstrate the read-only boundary remains fail-closed.
+1. use only permitted public sources and record them in
+   `docs/clean-room-sources.md` before implementation;
+2. preserve the fixed read-only order set and avoid raw-order/request escape
+   hatches;
+3. keep real credentials, identifiers, XML, certificates, and financial data
+   out of code, tests, issues, command arguments, and public CI;
+4. include focused positive and negative tests;
+5. pass formatting, lint, strict typing, tests, build/install, and dependency
+   audit checks; and
+6. include a Developer Certificate of Origin sign-off (`git commit -s`).
 
-By contributing, you agree that your contribution is available under the MIT
-License and that it was produced within these clean-room constraints.
+Do not vendor official EBICS artifacts unless a maintainer has documented clear
+redistribution and sublicensing permission. Do not weaken validation to make a
+fixture or bank pass.
+
+Contributions are licensed under MIT and certify compliance with the
+[Developer Certificate of Origin 1.1](https://developercertificate.org/).

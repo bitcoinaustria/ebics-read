@@ -1,0 +1,21 @@
+name: Security-sensitive protocol discrepancy
+description: Flag a public-standard discrepancy without disclosing a vulnerability.
+title: "[Protocol discrepancy] "
+labels: [protocol, security]
+body:
+  - type: markdown
+    attributes:
+      value: If exploitation may be possible, stop and use the private vulnerability-reporting link instead.
+  - type: input
+    id: source
+    attributes:
+      label: Public normative source and section
+    validations:
+      required: true
+  - type: textarea
+    id: discrepancy
+    attributes:
+      label: Discrepancy
+      description: Use synthetic examples only.
+    validations:
+      required: true

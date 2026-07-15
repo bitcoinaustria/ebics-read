@@ -11,8 +11,9 @@ EBICSMIT must be independently designed from lawful, documented sources.
 - Original design work created for this repository.
 
 Every protocol source used for implementation must be recorded in
-`docs/provenance.md`, including its URL or publication identity, access date,
-license or terms assessment, and the part of EBICSMIT it informed.
+`docs/clean-room-sources.md`, including its title and version, URL or publication
+identity, access date, SHA-256 where an artifact was retrieved, license or terms
+assessment, and the exact EBICSMIT requirement it informed.
 
 ## Prohibited inputs
 

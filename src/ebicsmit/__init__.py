@@ -1,18 +1,100 @@
-"""Public surface for the structurally read-only EBICSMIT scaffold."""
+"""Public surface for the experimental, structurally read-only client."""
 
-from .client import ReadOnlyClient
-from .errors import EbicsmitError, OrderNotAllowedError
-from .models import DownloadRequest, DownloadResult, RetrievalKind
-from .policy import ExplicitReadOnlyPolicy
-from .transport import DownloadTransport
+from .client import ReadOnlyBackend, ReadOnlyClient
+from .errors import (
+    BankKeyMismatchError,
+    BankKeyNotTrustedError,
+    ConfigurationError,
+    EbicsmitError,
+    OperationNotImplementedError,
+    ProtocolError,
+    ResponseLimitError,
+    SecurityError,
+    TransportError,
+    UnknownReturnCodeError,
+    XmlSecurityError,
+)
+from .interfaces import (
+    BankKeyTrustStore,
+    Clock,
+    KeyProvider,
+    KeyPurpose,
+    NonceSource,
+    SessionStore,
+)
+from .models import (
+    AccountSelector,
+    Bank,
+    BankKeyFingerprints,
+    BtfDescriptor,
+    CapabilityDiscovery,
+    ContainerType,
+    DateRange,
+    DownloadedDocument,
+    DownloadOptions,
+    DownloadPhase,
+    DownloadSession,
+    InitializationLetter,
+    KeyFingerprint,
+    ProtocolLimits,
+    ProtocolVersion,
+    ServiceCapability,
+    Subscriber,
+    TrustedBankKeys,
+    UntrustedBankKeys,
+    VersionDiscovery,
+)
+from .orders import OrderType
+from .transport import (
+    EbicsTransport,
+    HttpsTransport,
+    TransportRequest,
+    TransportResponse,
+)
 
 __all__ = [
-    "DownloadRequest",
-    "DownloadResult",
-    "DownloadTransport",
+    "AccountSelector",
+    "Bank",
+    "BankKeyFingerprints",
+    "BankKeyMismatchError",
+    "BankKeyNotTrustedError",
+    "BankKeyTrustStore",
+    "BtfDescriptor",
+    "CapabilityDiscovery",
+    "Clock",
+    "ConfigurationError",
+    "ContainerType",
+    "DateRange",
+    "DownloadOptions",
+    "DownloadPhase",
+    "DownloadSession",
+    "DownloadedDocument",
+    "EbicsTransport",
     "EbicsmitError",
-    "ExplicitReadOnlyPolicy",
-    "OrderNotAllowedError",
+    "HttpsTransport",
+    "InitializationLetter",
+    "KeyFingerprint",
+    "KeyProvider",
+    "KeyPurpose",
+    "NonceSource",
+    "OperationNotImplementedError",
+    "OrderType",
+    "ProtocolError",
+    "ProtocolLimits",
+    "ProtocolVersion",
+    "ReadOnlyBackend",
     "ReadOnlyClient",
-    "RetrievalKind",
+    "ResponseLimitError",
+    "SecurityError",
+    "ServiceCapability",
+    "SessionStore",
+    "Subscriber",
+    "TransportError",
+    "TransportRequest",
+    "TransportResponse",
+    "TrustedBankKeys",
+    "UnknownReturnCodeError",
+    "UntrustedBankKeys",
+    "VersionDiscovery",
+    "XmlSecurityError",
 ]
