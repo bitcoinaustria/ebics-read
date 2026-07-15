@@ -200,6 +200,11 @@ class HttpsTransport:
 
     def _read_bounded(self, response: HTTPResponse, control: OperationControl) -> bytes:
         declared = response.headers.get("Content-Length")
+        transfer_encoding = response.headers.get("Transfer-Encoding")
+        if declared is not None and transfer_encoding is not None:
+            raise TransportError(
+                "response contains conflicting Content-Length and Transfer-Encoding"
+            )
         declared_size: int | None = None
         if declared is not None:
             try:

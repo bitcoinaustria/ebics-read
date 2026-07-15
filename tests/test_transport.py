@@ -192,6 +192,14 @@ def test_response_reader_bounds_declared_and_streamed_sizes() -> None:
     )
 
 
+def test_response_reader_rejects_conflicting_http_framing() -> None:
+    response = FakeResponse(b"<root/>junk", "7")
+    response.headers["Transfer-Encoding"] = "chunked"
+
+    with pytest.raises(TransportError, match="conflicting"):
+        HttpsTransport(clock=CLOCK)._read_bounded(response, CONTROL)  # type: ignore[arg-type]
+
+
 def test_response_reader_handles_short_stream_reads() -> None:
     class ShortReadResponse(FakeResponse):
         def read(self, amount: int) -> bytes:
