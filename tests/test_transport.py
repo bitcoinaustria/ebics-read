@@ -185,6 +185,8 @@ def test_response_reader_bounds_declared_and_streamed_sizes() -> None:
         transport._read_bounded(  # type: ignore[arg-type]
             FakeResponse(b"", "invalid"), CONTROL
         )
+    with pytest.raises(TransportError, match="declared byte length"):
+        transport._read_bounded(FakeResponse(b"123", "4"), CONTROL)  # type: ignore[arg-type]
     assert (  # type: ignore[arg-type]
         transport._read_bounded(FakeResponse(b"1234"), CONTROL) == b"1234"
     )

@@ -42,6 +42,14 @@ remain distinct and cannot be interchanged in the public API.
 candidate certificate digests cannot be passed back as an already accepted OOB
 value.
 
+This is an explicit trust-ceremony boundary, not proof of physical provenance.
+Python cannot determine whether a host copied a candidate digest into
+`from_out_of_band()`. A host must obtain and collect the expected values through
+a separate interaction, must not prefill them from HPB, should show candidate
+and independently entered values side by side, and should record confirmation
+method and time in its own protected storage. EBICSMIT performs the typed,
+constant-time comparison but deliberately owns no UI or persistence policy.
+
 There is no trust-on-first-use mode. A newly downloaded or rotated certificate
 never replaces a pin silently. Rotation repeats the same out-of-band comparison.
 

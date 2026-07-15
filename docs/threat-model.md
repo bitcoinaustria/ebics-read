@@ -44,16 +44,20 @@ match the bank's out-of-band values.
 - No client method accepts an order type, XML, URL, or arbitrary parameter map.
 - HPB returns an untrusted type; discovery and BTD require a trusted type
   obtained only from the named explicit OOB acceptance constructor.
+  This constructor marks an explicit ceremony boundary but cannot prove that a
+  host obtained the entered strings through an independent physical channel.
 - Default HTTPS requires certificate verification and TLS 1.2+, refuses
   redirects, disables implicit environment/system proxies, bounds response
   bytes, and rejects caller-constructed requests. Proxy use requires an explicit
   typed configuration. There is no insecure public flag or public arbitrary-body
   exchange.
 - XML parsing disables DTD loading, entity resolution, network access,
-  recovery, and huge trees. A bounded parse target rejects depth, element,
-  text, attribute, namespace, XInclude, duplicate-ID, comment, and
+  recovery, and huge trees. A bounded first-pass scanner rejects depth,
+  element, text, attribute, namespace, XInclude, duplicate-ID, comment, and
   processing-instruction violations as events arrive, including document-level
-  nodes outside the root. Non-UTF-8 declarations and undecodable bytes fail.
+  nodes outside the root. A second secure parse of the identical immutable
+  bytes preserves source namespace prefixes for canonicalization. Non-UTF-8
+  declarations and undecodable bytes fail.
 - HEV accepts only the exact H000 root/shape and selects only H005/03.00. It
   rejects mixed content, conflicting or duplicate advertisements, and never
   falls back to H004. Every subsequent backend call receives that exact
@@ -73,7 +77,9 @@ match the bank's out-of-band values.
   caller-spool contract with a recoverable number/reference index, documents
   stream to an atomic sink, and results carry a content hash plus sanitized
   provenance rather than large in-memory byte tuples. Transport timeouts are
-  capped by the operation deadline and cancellation is checked around I/O.
+  capped by the operation deadline and cancellation is checked around I/O. The
+  same caller control reaches every network-facing method and covers HEV plus
+  the operation that follows it.
 - Retry classification treats only explicit transient transport interruptions as
   retryable when the transport proves no bytes were sent. Default network
   interruptions are ambiguous; security and protocol failures are terminal.
@@ -170,3 +176,37 @@ tests, 85.36% aggregate branch coverage, and per-file coverage of 91% for
 certificates, 91% for HEV, 88% for transport, and 91% for XML. It also confirmed
 that CA-marked certificates fail and every streamed response read refreshes its
 deadline-bounded socket timeout. No reviewer edited the tree.
+
+### HEV vertical-slice correction
+
+On 2026-07-15, a user-supplied review correctly challenged the claim that HEV
+was already end to end. It identified two release-blocking foundation defects:
+
+| Severity | Finding | Resolution and regression evidence |
+| --- | --- | --- |
+| High | The bounded XML target counted namespace declarations but rebuilt the tree without forwarding them, replacing source prefixes with generated prefixes and changing Canonical XML bytes. | Parsing now performs a bounded security scan followed by a secure tree parse of the same immutable bytes. `test_preserves_namespace_prefixes_for_canonicalization` asserts the exact C14N output and original prefix map. |
+| High | Only BTD accepted `OperationControl`; HEV, initialization, HPB, and discovery could not honor one whole-operation deadline. | Every public client and backend network operation now requires control. Negotiation and the following H005 call receive the same object; boundary tests assert object identity across both calls. |
+
+The correction also added the concrete HEV path, production clock/CSPRNG/control
+defaults, opt-in official H000 schema validation, and a real verified local-TLS
+test. That test exposed a further portability bug hidden by the urllib mocks:
+after a complete Content-Length-delimited read, Python may detach the response
+stream before another timeout update. The bounded reader now stops at the exact
+declared length, detects truncated bodies, and checks the response's closed
+state before reaching through to the live socket. Unit and local-TLS tests cover
+the corrected behavior. The private socket path remains deliberately guarded
+and fail-closed; the default multi-platform CI integration test is its ongoing
+compatibility evidence.
+
+Finally, the bank-key API and documentation now describe an explicit trust
+ceremony rather than cryptographic proof of provenance. The library can enforce
+typed constant-time equality, but only the host can keep HPB candidates separate
+from independently collected bank-document or bank-portal values.
+
+A fresh-context, review-only agent then found one medium evidence-integrity
+issue: the opt-in schema test accepted an arbitrary path while calling the file
+official. A permissive replacement XSD could therefore manufacture schema
+evidence. The test now pins the exact reviewed `ebics_hev.xsd` member digest,
+which is recorded alongside the enclosing archive hash in the clean-room
+manifest. The reviewer made no repository edits. This was agent-only review,
+not an external human audit.

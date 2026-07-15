@@ -59,8 +59,12 @@ def _validate_root_attributes(root: etree._Element) -> None:
     schema_location = root.get(_SCHEMA_LOCATION)
     if schema_location is not None:
         tokens = schema_location.split()
-        if tokens != [HEV_NAMESPACE, "ebics_hev.xsd"]:
-            raise XmlSecurityError("HEV schemaLocation is not the exact H000 mapping")
+        if (
+            len(tokens) != 2
+            or tokens[0] != HEV_NAMESPACE
+            or len(tokens[1].encode("utf-8")) > 1024
+        ):
+            raise XmlSecurityError("HEV schemaLocation is not one bounded H000 mapping")
 
 
 def _parse_system_return_code(element: etree._Element) -> str:
