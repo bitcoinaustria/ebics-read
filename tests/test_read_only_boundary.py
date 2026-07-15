@@ -2,65 +2,89 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import pytest
 
 import ebicsmit
 from ebicsmit import (
     Bank,
-    BankKeyFingerprints,
     BtfDescriptor,
     CapabilityDiscovery,
     ContainerType,
+    ContentSha256,
     DownloadedDocument,
     DownloadOptions,
+    EbicsPublicKeyDigest,
     InitializationLetter,
-    KeyFingerprint,
+    NegotiatedProtocol,
     OrderType,
     ProtocolVersion,
     ReadOnlyClient,
+    RetrievalProvenance,
     Subscriber,
     TrustedBankKeys,
     UntrustedBankKeys,
     VersionDiscovery,
 )
-from ebicsmit.testing import InMemoryBankKeyTrustStore
+from ebicsmit.testing import (
+    InMemoryBankKeyTrustStore,
+    generate_synthetic_bank_keys,
+    synthetic_out_of_band_identity,
+)
 
 
 @dataclass(slots=True)
 class RecordingBackend:
+    candidate: UntrustedBankKeys
     calls: list[str] = field(default_factory=list)
 
     def probe_versions(self, bank: Bank) -> VersionDiscovery:
         self.calls.append("HEV")
-        return VersionDiscovery((ProtocolVersion("H005", "3.0"),))
+        return VersionDiscovery((ProtocolVersion("H005", "03.00"),))
 
     def initialize_signature_key(
-        self, bank: Bank, subscriber: Subscriber
+        self,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
     ) -> InitializationLetter:
+        assert protocol == NegotiatedProtocol()
         self.calls.append("INI")
         return InitializationLetter(
-            OrderType.INI, b"synthetic-letter", (KeyFingerprint("A" * 64),)
+            OrderType.INI, b"synthetic-letter", (EbicsPublicKeyDigest("A" * 64),)
         )
 
     def initialize_auth_encryption_keys(
-        self, bank: Bank, subscriber: Subscriber
+        self,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
     ) -> InitializationLetter:
+        assert protocol == NegotiatedProtocol()
         self.calls.append("HIA")
         return InitializationLetter(
-            OrderType.HIA, b"synthetic-letter", (KeyFingerprint("B" * 64),)
+            OrderType.HIA, b"synthetic-letter", (EbicsPublicKeyDigest("B" * 64),)
         )
 
-    def fetch_bank_keys(self, bank: Bank, subscriber: Subscriber) -> UntrustedBankKeys:
+    def fetch_bank_keys(
+        self,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+    ) -> UntrustedBankKeys:
+        assert protocol == NegotiatedProtocol()
         self.calls.append("HPB")
-        return UntrustedBankKeys(b"synthetic-auth-cert", b"synthetic-enc-cert")
+        return self.candidate
 
     def discover_capabilities(
         self,
         bank: Bank,
         subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
         trusted_bank_keys: TrustedBankKeys,
     ) -> CapabilityDiscovery:
+        assert protocol == NegotiatedProtocol()
         self.calls.append("DISCOVERY")
         return CapabilityDiscovery(completed_orders=(OrderType.HAA,))
 
@@ -68,24 +92,43 @@ class RecordingBackend:
         self,
         bank: Bank,
         subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
         trusted_bank_keys: TrustedBankKeys,
         descriptor: BtfDescriptor,
         options: DownloadOptions,
+        sink: object,
+        control: object,
     ) -> tuple[DownloadedDocument, ...]:
+        assert protocol == NegotiatedProtocol()
         self.calls.append("BTD")
         return (
             DownloadedDocument(
-                service_name=descriptor.service_name,
-                scope=descriptor.scope,
-                message_name=descriptor.message_name,
-                message_version=descriptor.message_version,
-                variant=descriptor.variant,
-                format=descriptor.format,
-                service_option=descriptor.service_option,
-                container_type=descriptor.container_type,
-                content=b"opaque-synthetic-document",
+                provenance=RetrievalProvenance(
+                    descriptor=descriptor,
+                    protocol=NegotiatedProtocol(),
+                    retrieved_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+                    transaction_id_sha256=ContentSha256.from_bytes(b"transaction"),
+                    segment_count=1,
+                    bank_host_id=bank.host_id,
+                ),
+                content_sha256=ContentSha256.from_bytes(b"opaque-synthetic-document"),
+                size_bytes=len(b"opaque-synthetic-document"),
+                sink_reference="synthetic-document-1",
             ),
         )
+
+
+@dataclass(frozen=True)
+class DummySink:
+    pass
+
+
+@dataclass(frozen=True)
+class DummyControl:
+    deadline: datetime = datetime(2026, 7, 16, tzinfo=timezone.utc)
+
+    def raise_if_cancelled(self) -> None:
+        return None
 
 
 @pytest.fixture
@@ -104,7 +147,9 @@ def descriptor() -> BtfDescriptor:
 
 @pytest.fixture
 def client() -> tuple[ReadOnlyClient, RecordingBackend]:
-    backend = RecordingBackend()
+    backend = RecordingBackend(
+        generate_synthetic_bank_keys(datetime(2026, 7, 15, tzinfo=timezone.utc))
+    )
     value = ReadOnlyClient(
         Bank("https://bank.invalid/ebics", "HOST"),
         Subscriber("PARTNER", "USER"),
@@ -173,10 +218,10 @@ def test_initialization_is_explicit_and_not_a_business_upload(
     client: tuple[ReadOnlyClient, RecordingBackend],
 ) -> None:
     value, backend = client
-    assert value.probe_versions().versions[0].protocol_version == "H005"
+    assert value.probe_versions() == NegotiatedProtocol()
     assert value.initialize_signature_key().order is OrderType.INI
     assert value.initialize_auth_encryption_keys().order is OrderType.HIA
-    assert backend.calls == ["HEV", "INI", "HIA"]
+    assert backend.calls == ["HEV", "HEV", "INI", "HEV", "HIA"]
 
 
 def test_hpb_keys_are_untrusted_until_oob_acceptance(
@@ -186,18 +231,19 @@ def test_hpb_keys_are_untrusted_until_oob_acceptance(
     candidate = value.fetch_bank_keys()
 
     with pytest.raises(ebicsmit.BankKeyNotTrustedError):
-        value.download(descriptor)
-    assert backend.calls == ["HPB"]
+        value.download(descriptor, DummySink(), DummyControl())  # type: ignore[arg-type]
+    assert backend.calls == ["HEV", "HPB"]
 
-    expected = BankKeyFingerprints(
-        candidate.fingerprints.authentication,
-        candidate.fingerprints.encryption,
-    )
+    expected = synthetic_out_of_band_identity(candidate)
     value.accept_bank_keys(candidate, expected)
-    documents = value.download(descriptor)
+    documents = value.download(  # type: ignore[arg-type]
+        descriptor, DummySink(), DummyControl()
+    )
 
-    assert documents[0].content == b"opaque-synthetic-document"
-    assert backend.calls == ["HPB", "BTD"]
+    assert documents[0].content_sha256 == ContentSha256.from_bytes(
+        b"opaque-synthetic-document"
+    )
+    assert backend.calls == ["HEV", "HPB", "HEV", "BTD"]
 
 
 def test_generic_request_parameter_mapping_no_longer_exists() -> None:

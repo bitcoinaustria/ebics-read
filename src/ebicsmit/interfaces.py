@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from datetime import datetime
 from enum import Enum
 from typing import Protocol
 
 from .models import (
+    AcceptedBankKeyIdentity,
     Bank,
-    BankKeyFingerprints,
+    ContentSha256,
+    DownloadedDocument,
     DownloadSession,
+    RetrievalProvenance,
+    SegmentReference,
+    SessionLease,
     TrustedBankKeys,
     UntrustedBankKeys,
+    ZipMemberIdentity,
 )
 
 
@@ -46,9 +53,9 @@ class BankKeyTrustStore(Protocol):
         self,
         bank: Bank,
         candidate: UntrustedBankKeys,
-        expected: BankKeyFingerprints,
+        expected: AcceptedBankKeyIdentity,
     ) -> TrustedBankKeys:
-        """Accept only when caller-supplied OOB fingerprints match the candidate."""
+        """Accept only when caller-supplied OOB EBICS digests match the candidate."""
 
     def require_trusted(self, bank: Bank) -> TrustedBankKeys:
         """Return pinned keys or fail closed."""
@@ -69,13 +76,99 @@ class NonceSource(Protocol):
 
 
 class SessionStore(Protocol):
-    """Caller-controlled storage for non-secret resumable transaction state."""
+    """Atomic caller storage for sensitive resumable transaction metadata."""
 
-    def load(self, session_id: str) -> DownloadSession | None:
-        """Load state without logging its identifiers."""
+    def acquire_lease(
+        self, session_id: str, owner_token: bytes, expires_at: datetime
+    ) -> SessionLease:
+        """Acquire exclusive ownership or fail if another live worker holds it."""
 
-    def save(self, state: DownloadSession) -> None:
-        """Atomically replace one immutable state value."""
+    def load(self, lease: SessionLease) -> DownloadSession | None:
+        """Load state only for the current lease owner."""
 
-    def delete(self, session_id: str) -> None:
-        """Remove completed or invalidated state."""
+    def compare_and_swap(
+        self,
+        lease: SessionLease,
+        expected_revision: int | None,
+        state: DownloadSession,
+    ) -> bool:
+        """Atomically store only when ownership and revision still match."""
+
+    def delete(self, lease: SessionLease, expected_revision: int) -> bool:
+        """Atomically remove completed or invalidated state."""
+
+    def release_lease(self, lease: SessionLease) -> None:
+        """Release ownership without exposing its token."""
+
+
+class SegmentStore(Protocol):
+    """Caller-controlled encrypted or equivalently protected ciphertext spool."""
+
+    def put_segment(
+        self,
+        lease: SessionLease,
+        segment_number: int,
+        chunks: Iterable[bytes],
+    ) -> SegmentReference:
+        """Atomically store one bounded ciphertext segment from streamed chunks."""
+
+    def iter_segment(
+        self, lease: SessionLease, reference: SegmentReference
+    ) -> Iterator[bytes]:
+        """Stream one stored segment without materializing the transaction."""
+
+    def list_segments(
+        self, lease: SessionLease
+    ) -> tuple[tuple[int, SegmentReference], ...]:
+        """Recover the ordered number/reference index after process restart."""
+
+    def discard(self, lease: SessionLease) -> None:
+        """Remove every partial segment for a terminal transaction."""
+
+
+class DocumentWriter(Protocol):
+    """One atomic sink transaction; partial output is never a document."""
+
+    def write(self, chunk: bytes) -> None:
+        """Append one bounded verified plaintext chunk."""
+
+    def commit(
+        self,
+        content_sha256: ContentSha256,
+        size_bytes: int,
+        zip_members: tuple[ZipMemberIdentity, ...],
+    ) -> DownloadedDocument:
+        """Atomically publish the document and return its small result record."""
+
+    def abort(self) -> None:
+        """Discard partial plaintext."""
+
+
+class DocumentSink(Protocol):
+    """Caller-controlled destination for streaming verified plaintext."""
+
+    def begin(self, provenance: RetrievalProvenance) -> DocumentWriter:
+        """Start an unpublished atomic document transaction."""
+
+
+class OperationControl(Protocol):
+    """Caller-owned whole-operation deadline and cancellation boundary."""
+
+    @property
+    def deadline(self) -> datetime:
+        """Return the absolute timezone-aware deadline."""
+
+    def raise_if_cancelled(self) -> None:
+        """Raise a caller-selected cancellation exception when requested."""
+
+
+class BankCertificateProfile(Protocol):
+    """Strict profile validation kept separate from OOB key acceptance."""
+
+    def validate_pair(
+        self,
+        authentication_certificate_der: bytes,
+        encryption_certificate_der: bytes,
+        now: datetime,
+    ) -> UntrustedBankKeys:
+        """Return unusable candidates only after DER and profile validation."""

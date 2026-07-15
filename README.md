@@ -30,17 +30,21 @@ they cannot carry business documents.
 Current foundation APIs provide:
 
 - immutable bank, subscriber, BTF, date, account, capability, and result models;
-- injected key, bank-key trust, transport, clock, nonce, and session protocols;
-- explicit out-of-band bank-key fingerprint acceptance;
-- HTTPS-only TLS 1.2+ transport with certificate verification, no redirects, and
-  bounded responses;
+- injected key, bank-key trust, transport, clock, nonce, session, segment-spool,
+  streaming document-sink, deadline, and cancellation protocols;
+- separate certificate fingerprints and normative H005 public-key digests, with
+  explicit out-of-band bank-key acceptance only after strict X.509 validation;
+- exact H000 HEV parsing and H005/03.00 selection without H004 fallback;
+- HTTPS-only TLS 1.2+ transport with certificate verification, no redirects,
+  no implicit environment proxy, and bounded responses;
 - an XML parser boundary that rejects DTDs, entities, XInclude, recovery,
   duplicate IDs, and configured resource-limit violations;
 - synthetic deterministic testing helpers that must never hold production
   secrets.
 
-Exact H000/H005 envelopes, signatures, encryption, segmented BTD transactions,
-receipts, and return-code handling are not implemented yet.
+HEV response parsing is the only implemented protocol slice. H005 envelopes,
+signatures, encryption, initialization, discovery, and segmented BTD execution
+remain unimplemented.
 
 ## Development
 

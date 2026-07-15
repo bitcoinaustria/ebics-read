@@ -4,13 +4,14 @@
 
 - **Synthetic:** original fixtures generated for this repository.
 - **Schema:** validated against separately downloaded official schemas with
-  recorded hashes; no such evidence exists yet.
+  recorded hashes; the archive is reviewed and hashed, but no schema-validation
+  test exists yet.
 - **Mock:** exercised against the future synthetic bank server.
 - **Live:** exercised with a consenting user's ordinary bank-issued read-only
   credentials; no such evidence exists yet.
 
-Current evidence is synthetic foundation testing only. It proves neither EBICS
-conformance nor bank compatibility.
+Current evidence is normative-document review plus synthetic foundation and HEV
+parser testing only. It proves neither EBICS conformance nor bank compatibility.
 
 ## Live harness rules
 
