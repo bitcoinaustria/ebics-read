@@ -54,6 +54,9 @@ ebicsmit = ["py.typed"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers --cov=ebicsmit --cov-branch --cov-report=term-missing --cov-fail-under=85"
 testpaths = ["tests"]
+markers = [
+  "schema: requires a separately supplied official EBICS schema artifact",
+]
 
 [tool.coverage.run]
 source = ["ebicsmit"]

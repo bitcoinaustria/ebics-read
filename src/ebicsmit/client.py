@@ -25,7 +25,7 @@ from .models import (
 class ReadOnlyBackend(Protocol):
     """Internal protocol engine contract with no generic order execution method."""
 
-    def probe_versions(self, bank: Bank) -> VersionDiscovery:
+    def probe_versions(self, bank: Bank, control: OperationControl) -> VersionDiscovery:
         """Execute HEV/H000."""
 
     def initialize_signature_key(
@@ -33,6 +33,7 @@ class ReadOnlyBackend(Protocol):
         bank: Bank,
         subscriber: Subscriber,
         protocol: NegotiatedProtocol,
+        control: OperationControl,
     ) -> InitializationLetter:
         """Execute INI and return initialization-letter data."""
 
@@ -41,6 +42,7 @@ class ReadOnlyBackend(Protocol):
         bank: Bank,
         subscriber: Subscriber,
         protocol: NegotiatedProtocol,
+        control: OperationControl,
     ) -> InitializationLetter:
         """Execute HIA and return initialization-letter data."""
 
@@ -49,6 +51,7 @@ class ReadOnlyBackend(Protocol):
         bank: Bank,
         subscriber: Subscriber,
         protocol: NegotiatedProtocol,
+        control: OperationControl,
     ) -> UntrustedBankKeys:
         """Execute HPB and return keys that are still unusable."""
 
@@ -58,6 +61,7 @@ class ReadOnlyBackend(Protocol):
         subscriber: Subscriber,
         protocol: NegotiatedProtocol,
         trusted_bank_keys: TrustedBankKeys,
+        control: OperationControl,
     ) -> CapabilityDiscovery:
         """Defensively execute supported HPD/HAA/HKD/HTD discovery orders."""
 
@@ -84,26 +88,30 @@ class ReadOnlyClient:
     backend: ReadOnlyBackend
     bank_key_trust_store: BankKeyTrustStore
 
-    def probe_versions(self) -> NegotiatedProtocol:
+    def probe_versions(self, control: OperationControl) -> NegotiatedProtocol:
         """Execute HEV and pin the exact H005/03.00 protocol pair."""
 
-        return self.backend.probe_versions(self.bank).select_h005()
+        return self.backend.probe_versions(self.bank, control).select_h005()
 
-    def initialize_signature_key(self) -> InitializationLetter:
+    def initialize_signature_key(
+        self, control: OperationControl
+    ) -> InitializationLetter:
         return self.backend.initialize_signature_key(
-            self.bank, self.subscriber, self._negotiate()
+            self.bank, self.subscriber, self._negotiate(control), control
         )
 
-    def initialize_auth_encryption_keys(self) -> InitializationLetter:
+    def initialize_auth_encryption_keys(
+        self, control: OperationControl
+    ) -> InitializationLetter:
         return self.backend.initialize_auth_encryption_keys(
-            self.bank, self.subscriber, self._negotiate()
+            self.bank, self.subscriber, self._negotiate(control), control
         )
 
-    def fetch_bank_keys(self) -> UntrustedBankKeys:
+    def fetch_bank_keys(self, control: OperationControl) -> UntrustedBankKeys:
         """Fetch, but never silently accept, HPB bank keys."""
 
         return self.backend.fetch_bank_keys(
-            self.bank, self.subscriber, self._negotiate()
+            self.bank, self.subscriber, self._negotiate(control), control
         )
 
     def accept_bank_keys(
@@ -117,10 +125,10 @@ class ReadOnlyClient:
             self.bank, candidate, expected_out_of_band
         )
 
-    def discover_capabilities(self) -> CapabilityDiscovery:
+    def discover_capabilities(self, control: OperationControl) -> CapabilityDiscovery:
         trusted = self.bank_key_trust_store.require_trusted(self.bank)
         return self.backend.discover_capabilities(
-            self.bank, self.subscriber, self._negotiate(), trusted
+            self.bank, self.subscriber, self._negotiate(control), trusted, control
         )
 
     def download(
@@ -134,7 +142,7 @@ class ReadOnlyClient:
         return self.backend.download(
             self.bank,
             self.subscriber,
-            self._negotiate(),
+            self._negotiate(control),
             trusted,
             descriptor,
             options if options is not None else DownloadOptions(),
@@ -142,7 +150,7 @@ class ReadOnlyClient:
             control,
         )
 
-    def _negotiate(self) -> NegotiatedProtocol:
+    def _negotiate(self, control: OperationControl) -> NegotiatedProtocol:
         """Re-negotiate and pass the exact protocol into every H005 operation."""
 
-        return self.backend.probe_versions(self.bank).select_h005()
+        return self.backend.probe_versions(self.bank, control).select_h005()

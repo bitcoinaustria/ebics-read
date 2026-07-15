@@ -67,6 +67,10 @@ class OperationDeadlineError(EbicsmitError):
     """Raised before accepting work that cannot finish within the deadline."""
 
 
+class OperationCancelledError(EbicsmitError):
+    """Raised by the default operation control after explicit cancellation."""
+
+
 class TransportError(EbicsmitError):
     """Raised for TLS, redirect, timeout, or HTTP transport failure."""
 

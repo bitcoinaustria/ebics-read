@@ -35,6 +35,9 @@ Current foundation APIs provide:
 - separate certificate fingerprints and normative H005 public-key digests, with
   explicit out-of-band bank-key acceptance only after strict X.509 validation;
 - exact H000 HEV parsing and H005/03.00 selection without H004 fallback;
+- a concrete HEV backend joining fixed request construction, bounded HTTPS,
+  namespace-preserving XML parsing, and H005 selection;
+- production system-clock, CSPRNG nonce, deadline, and cancellation defaults;
 - HTTPS-only TLS 1.2+ transport with certificate verification, no redirects,
   no implicit environment proxy, and bounded responses;
 - an XML parser boundary that rejects DTDs, entities, XInclude, recovery,
@@ -42,9 +45,11 @@ Current foundation APIs provide:
 - synthetic deterministic testing helpers that must never hold production
   secrets.
 
-HEV response parsing is the only implemented protocol slice. H005 envelopes,
-signatures, encryption, initialization, discovery, and segmented BTD execution
-remain unimplemented.
+HEV is the only complete protocol transaction: fixed request construction,
+verified HTTPS exchange, bounded response parsing, and H005 selection. H005
+envelopes, signatures, encryption, initialization, discovery, and segmented
+BTD execution remain unimplemented. Synthetic local-TLS and separately supplied
+official-schema evidence does not establish bank interoperability or conformance.
 
 ## Development
 
