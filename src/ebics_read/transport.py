@@ -200,6 +200,12 @@ class HttpsTransport:
 
     def _read_bounded(self, response: HTTPResponse, control: OperationControl) -> bytes:
         declared = response.headers.get("Content-Length")
+        transfer_encoding = response.headers.get("Transfer-Encoding")
+        if declared is not None and transfer_encoding is not None:
+            raise TransportError(
+                "response contains conflicting Content-Length and Transfer-Encoding"
+            )
+        declared_size: int | None = None
         if declared is not None:
             try:
                 declared_size = int(declared)
@@ -210,6 +216,11 @@ class HttpsTransport:
         chunks: list[bytes] = []
         received = 0
         while received <= self.max_response_bytes:
+            if declared_size is not None and received == declared_size:
+                break
+            is_closed = getattr(response, "isclosed", None)
+            if callable(is_closed) and is_closed():
+                break
             remaining = self._remaining_timeout(control)
             self._set_read_timeout(response, remaining)
             reader = getattr(response, "read1", response.read)
@@ -220,6 +231,8 @@ class HttpsTransport:
             received += len(chunk)
         if received > self.max_response_bytes:
             raise ResponseLimitError("response exceeds configured byte limit")
+        if declared_size is not None and received != declared_size:
+            raise TransportError("response ended before its declared byte length")
         return b"".join(chunks)
 
     @staticmethod

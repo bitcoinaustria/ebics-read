@@ -53,7 +53,7 @@ class XmlLimits:
 
 
 def parse_xml_document(data: bytes, limits: XmlLimits | None = None) -> etree._Element:
-    """Parse untrusted XML without DTDs, entities, recovery, or network access."""
+    """Bound-check, then parse the same bytes without changing namespace prefixes."""
 
     active = limits if limits is not None else XmlLimits()
     if not isinstance(data, bytes):
@@ -71,9 +71,9 @@ def parse_xml_document(data: bytes, limits: XmlLimits | None = None) -> etree._E
         raise XmlSecurityError("XML declaration must specify UTF-8")
     if b"<!DOCTYPE" in data:
         raise XmlSecurityError("DOCTYPE declarations are forbidden")
-    target = _BoundedTreeBuilder(active)
-    parser = etree.XMLParser(
-        target=target,
+    scanner = _BoundedXmlScanner(active)
+    scan_parser = etree.XMLParser(
+        target=scanner,
         resolve_entities=False,
         no_network=True,
         load_dtd=False,
@@ -83,9 +83,24 @@ def parse_xml_document(data: bytes, limits: XmlLimits | None = None) -> etree._E
         strip_cdata=False,
     )
     try:
-        root = etree.fromstring(data, parser)
+        etree.fromstring(data, scan_parser)
     except (ResponseLimitError, XmlSecurityError):
         raise
+    except (etree.XMLSyntaxError, ValueError) as exc:
+        raise XmlSecurityError("invalid XML document") from exc
+    parser = etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        dtd_validation=False,
+        recover=False,
+        huge_tree=False,
+        strip_cdata=False,
+        remove_comments=False,
+        remove_pis=False,
+    )
+    try:
+        root = etree.fromstring(data, parser)
     except (etree.XMLSyntaxError, ValueError) as exc:
         raise XmlSecurityError("invalid XML document") from exc
     if not isinstance(root, etree._Element):
@@ -93,12 +108,11 @@ def parse_xml_document(data: bytes, limits: XmlLimits | None = None) -> etree._E
     return root
 
 
-class _BoundedTreeBuilder:
-    """Apply structural limits while lxml is still emitting parse events."""
+class _BoundedXmlScanner:
+    """Apply structural limits without rebuilding the namespace-sensitive tree."""
 
     def __init__(self, limits: XmlLimits) -> None:
         self._limits = limits
-        self._builder = etree.TreeBuilder()
         self._depth = 0
         self._elements = 0
         self._current_text = 0
@@ -142,7 +156,6 @@ class _BoundedTreeBuilder:
                 if attribute_value in self._seen_ids:
                     self._fail(XmlSecurityError("duplicate XML ID detected"))
                 self._seen_ids.add(attribute_value)
-        self._builder.start(tag, attributes)
 
     def data(self, data: str | bytes) -> None:
         size = len(data if isinstance(data, bytes) else data.encode("utf-8"))
@@ -152,7 +165,6 @@ class _BoundedTreeBuilder:
             self._fail(ResponseLimitError("XML text node exceeds configured limit"))
         if self._total_text > self._limits.max_total_text_bytes:
             self._fail(ResponseLimitError("XML text exceeds configured total limit"))
-        self._builder.data(data)
 
     def start_ns(self, prefix: str | bytes | None, uri: str | bytes) -> None:
         if (prefix is not None and not isinstance(prefix, str)) or not isinstance(
@@ -180,7 +192,6 @@ class _BoundedTreeBuilder:
         return None
 
     def end(self, tag: str | bytes) -> None:
-        self._builder.end(tag)
         self._depth -= 1
         self._current_text = 0
 
@@ -190,10 +201,10 @@ class _BoundedTreeBuilder:
     def pi(self, target: str | bytes, data: str | bytes | None = None) -> None:
         self._fail(XmlSecurityError("processing instructions are forbidden"))
 
-    def close(self) -> etree._Element:
+    def close(self) -> bool:
         if self._failure is not None:
             raise self._failure
-        return self._builder.close()
+        return True
 
     def _fail(self, error: ResponseLimitError | XmlSecurityError) -> NoReturn:
         self._failure = error

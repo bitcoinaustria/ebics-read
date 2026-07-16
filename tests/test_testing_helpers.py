@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from ebicsmit import DownloadSession, ProtocolLimits, SessionConflictError
-from ebicsmit.testing import (
+from ebics_read import DownloadSession, ProtocolLimits, SessionConflictError
+from ebics_read.testing import (
     DeterministicNonceSource,
     FixedClock,
     InMemorySegmentStore,

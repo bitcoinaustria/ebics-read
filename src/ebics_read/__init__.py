@@ -1,5 +1,6 @@
 """Public surface for the experimental, structurally read-only client."""
 
+from .backend import EbicsBackend
 from .certificates import SelfSignedH005BankCertificateProfile
 from .client import ReadOnlyBackend, ReadOnlyClient
 from .errors import (
@@ -8,7 +9,8 @@ from .errors import (
     BankKeyNotTrustedError,
     CertificateValidationError,
     ConfigurationError,
-    EbicsmitError,
+    EbicsReadError,
+    OperationCancelledError,
     OperationDeadlineError,
     OperationNotImplementedError,
     ProtocolError,
@@ -69,6 +71,7 @@ from .models import (
     ZipMemberIdentity,
 )
 from .orders import OrderType
+from .runtime import DeadlineControl, SecureNonceSource, SystemClock
 from .transport import (
     EbicsTransport,
     HttpsTransport,
@@ -96,21 +99,24 @@ __all__ = [
     "ContainerType",
     "ContentSha256",
     "DateRange",
+    "DeadlineControl",
     "DocumentSink",
     "DocumentWriter",
     "DownloadOptions",
     "DownloadPhase",
     "DownloadSession",
     "DownloadedDocument",
+    "EbicsBackend",
     "EbicsPublicKeyDigest",
+    "EbicsReadError",
     "EbicsTransport",
-    "EbicsmitError",
     "HttpsTransport",
     "InitializationLetter",
     "KeyProvider",
     "KeyPurpose",
     "NegotiatedProtocol",
     "NonceSource",
+    "OperationCancelledError",
     "OperationControl",
     "OperationDeadlineError",
     "OperationNotImplementedError",
@@ -125,6 +131,7 @@ __all__ = [
     "ResponseLimitError",
     "RetrievalProvenance",
     "RetryClassification",
+    "SecureNonceSource",
     "SecurityError",
     "SegmentReference",
     "SegmentStore",
@@ -134,6 +141,7 @@ __all__ = [
     "SessionLease",
     "SessionStore",
     "Subscriber",
+    "SystemClock",
     "TransientTransportError",
     "TransportError",
     "TransportRequest",

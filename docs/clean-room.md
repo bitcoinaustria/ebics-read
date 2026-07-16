@@ -1,6 +1,6 @@
 # Clean-room policy
 
-EBICSMIT must be independently designed from lawful, documented sources.
+EBICS Read must be independently designed from lawful, documented sources.
 
 ## Allowed inputs
 
@@ -13,7 +13,7 @@ EBICSMIT must be independently designed from lawful, documented sources.
 Every protocol source used for implementation must be recorded in
 `docs/clean-room-sources.md`, including its title and version, URL or publication
 identity, access date, SHA-256 where an artifact was retrieved, license or terms
-assessment, and the exact EBICSMIT requirement it informed.
+assessment, and the exact EBICS Read requirement it informed.
 
 ## Prohibited inputs
 

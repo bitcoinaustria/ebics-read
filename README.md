@@ -1,19 +1,18 @@
-# EBICSMIT
+# EBICS Read
 
 An independent, MIT-licensed, read-only Python client for EBICS 3.0/H005.
 
 > [!WARNING]
-> EBICSMIT is pre-alpha foundation work, not a usable or production-ready EBICS
+> EBICS Read is pre-alpha foundation work, not a usable or production-ready EBICS
 > client. It has not completed cryptographic implementation or bank
 > interoperability testing.
 
-EBICSMIT is an independent open-source project. It is not affiliated with or
-endorsed by EBICS SC, the Massachusetts Institute of Technology, or any
-financial institution.
+EBICS Read is an independent open-source project. It is not affiliated with or
+endorsed by EBICS SC or any financial institution.
 
 EBICS is a registered trademark of EBICS SC. The name is used descriptively to
 identify the published protocol. This project uses no EBICS, “Ready for EBICS”,
-MIT, or bank logos and makes no certification or conformance claim.
+or bank logos and makes no certification or conformance claim.
 
 ## Boundary
 
@@ -35,6 +34,9 @@ Current foundation APIs provide:
 - separate certificate fingerprints and normative H005 public-key digests, with
   explicit out-of-band bank-key acceptance only after strict X.509 validation;
 - exact H000 HEV parsing and H005/03.00 selection without H004 fallback;
+- a concrete HEV backend joining fixed request construction, bounded HTTPS,
+  namespace-preserving XML parsing, and H005 selection;
+- production system-clock, CSPRNG nonce, deadline, and cancellation defaults;
 - HTTPS-only TLS 1.2+ transport with certificate verification, no redirects,
   no implicit environment proxy, and bounded responses;
 - an XML parser boundary that rejects DTDs, entities, XInclude, recovery,
@@ -42,13 +44,24 @@ Current foundation APIs provide:
 - synthetic deterministic testing helpers that must never hold production
   secrets.
 
-HEV response parsing is the only implemented protocol slice. H005 envelopes,
-signatures, encryption, initialization, discovery, and segmented BTD execution
-remain unimplemented.
+HEV is the only complete protocol transaction: fixed request construction,
+verified HTTPS exchange, bounded response parsing, and H005 selection. H005
+envelopes, signatures, encryption, initialization, discovery, and segmented
+BTD execution remain unimplemented. Synthetic local-TLS and separately supplied
+official-schema evidence does not establish bank interoperability or conformance.
 
 ## Development
 
 Python 3.10 or newer is supported.
+
+Packaging uses the distribution name `ebics-read`; Python code imports the
+underscore package:
+
+```python
+import ebics_read
+```
+
+For development:
 
 ```console
 python -m venv .venv
@@ -72,6 +85,6 @@ recorded as agent review and is not described as an independent security audit.
 
 ## License
 
-EBICSMIT is licensed under the [MIT License](LICENSE). Official EBICS
+EBICS Read is licensed under the [MIT License](LICENSE). Official EBICS
 specifications, schemas, implementation guides, annexes, and code lists are not
 included and are not covered by this license.

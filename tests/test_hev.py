@@ -1,12 +1,12 @@
 import pytest
 
-from ebicsmit import (
+from ebics_read import (
     ProtocolError,
     UnknownReturnCodeError,
     UnsupportedProtocolVersionError,
     XmlSecurityError,
 )
-from ebicsmit.hev import H005_NAMESPACE, HEV_NAMESPACE, parse_hev_response
+from ebics_read.hev import H005_NAMESPACE, HEV_NAMESPACE, parse_hev_response
 
 
 def response(
@@ -51,18 +51,33 @@ def test_rejects_downgrade_duplicate_and_conflicting_advertisements() -> None:
         parse_hev_response(response(conflict))
 
 
-def test_rejects_wrong_namespaces_shape_attributes_and_schema_location() -> None:
+def test_rejects_wrong_namespaces_shape_and_attributes() -> None:
     payloads = (
         response().replace(b"http://www.ebics.org/H000", b"urn:wrong", 1),
         response()
         .replace(b"<VersionNumber", b"<Foreign", 1)
         .replace(b"</VersionNumber>", b"</Foreign>", 1),
         response(extra_root_attribute=b' unsafe="true"'),
-        response().replace(b"H000 ebics_hev.xsd", b"H000 remote.xsd"),
+        response().replace(b"H000 ebics_hev.xsd", b"H001 remote.xsd"),
+        response().replace(b"H000 ebics_hev.xsd", b"H000 one.xsd extra"),
     )
     for payload in payloads:
         with pytest.raises(XmlSecurityError):
             parse_hev_response(payload)
+
+
+def test_schema_location_is_an_optional_non_resolved_hint() -> None:
+    alternate = response().replace(
+        b"ebics_hev.xsd", b"https://bank.invalid/schema/ebics_hev.xsd"
+    )
+    absent = response().replace(
+        b' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        b'xsi:schemaLocation="http://www.ebics.org/H000 ebics_hev.xsd"',
+        b"",
+    )
+
+    assert parse_hev_response(alternate).select_h005().protocol_version == "H005"
+    assert parse_hev_response(absent).select_h005().protocol_version == "H005"
 
 
 def test_hev_return_codes_fail_closed() -> None:

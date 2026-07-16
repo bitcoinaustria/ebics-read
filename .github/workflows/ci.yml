@@ -57,13 +57,13 @@ jobs:
       - name: Security tests and aggregate coverage
         run: python -m pytest -q
       - name: Certificate branch coverage
-        run: python -m coverage report --include=src/ebicsmit/certificates.py --fail-under=90
+        run: python -m coverage report --include=src/ebics_read/certificates.py --fail-under=90
       - name: HEV branch coverage
-        run: python -m coverage report --include=src/ebicsmit/hev.py --fail-under=90
+        run: python -m coverage report --include=src/ebics_read/hev.py --fail-under=90
       - name: Transport branch coverage
-        run: python -m coverage report --include=src/ebicsmit/transport.py --fail-under=85
+        run: python -m coverage report --include=src/ebics_read/transport.py --fail-under=85
       - name: XML branch coverage
-        run: python -m coverage report --include=src/ebicsmit/xml.py --fail-under=90
+        run: python -m coverage report --include=src/ebics_read/xml.py --fail-under=90
       - name: Compile
         run: python -m compileall -q src tests
       - name: Dependency audit
@@ -87,4 +87,4 @@ jobs:
       - name: Install wheel artifact
         run: python -m pip install --force-reinstall dist/*.whl
       - name: Import installed artifact
-        run: python -I -c "import ebicsmit; assert ebicsmit.__all__"
+        run: python -I -c "import ebics_read; assert ebics_read.__all__"

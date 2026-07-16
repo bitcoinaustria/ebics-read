@@ -2,7 +2,7 @@
 
 ## Objective
 
-EBICSMIT implements protocol mechanics between one caller and its bank while
+EBICS Read implements protocol mechanics between one caller and its bank while
 streaming opaque, verified document bytes into a caller-owned atomic sink. It
 returns compact trustworthy metadata and references. It does not own business policy,
 credentials, persistence, scheduling, document interpretation, or UI.
@@ -15,6 +15,7 @@ interoperability has been demonstrated.
 | Module | Responsibility |
 | --- | --- |
 | `client` | Explicit HEV, INI, HIA, HPB, discovery, trust acceptance, and BTD facade |
+| `backend` | Concrete fixed-operation engine; currently connects the complete HEV path |
 | `models` | Immutable, bounded configuration, descriptor, capability, key, and result values |
 | `orders` | Complete fixed allowlist; no generic order constructor |
 | `interfaces` | Injected keys, bank trust, clock, nonce, leased state, segment spool, streaming sink, and operation-control boundaries |
@@ -23,6 +24,7 @@ interoperability has been demonstrated.
 | `hev` | Exact H000 response parsing and H005/03.00 selection input |
 | `certificates` | Strict selectable X.509 profile validation, separate from OOB trust |
 | `testing` | Deterministic synthetic helpers, never production secrets |
+| `runtime` | Production system clock, CSPRNG nonce source, deadline, and cancellation defaults |
 
 Future protocol-specific envelope, signature, crypto, compression, and state
 modules must remain internal. They may compose audited dependencies but may not
@@ -37,14 +39,17 @@ protocols. The protocol core never reaches into host storage.
 
 `lxml` is selected because it exposes the
 libxml2 controls needed to disable entity resolution, DTD loading, network
-resolution, recovery, and huge-tree parsing. A streaming parse target applies
-explicit input, depth, element, text, XInclude, comment, processing-instruction,
-and duplicate-ID limits before accepting more structure. Python's standard XML
-APIs do not expose the same complete parser control surface.
+resolution, recovery, and huge-tree parsing. A first pass over the immutable
+input bytes applies explicit depth, element, text, attribute, namespace,
+XInclude, comment, processing-instruction, and duplicate-ID limits. A second
+hardened parse of those same bytes constructs the tree while preserving the
+source namespace prefixes required by Canonical XML. The bounded scan never
+rebuilds the signed tree. Python's standard XML APIs do not expose the same
+complete parser control surface.
 
 `cryptography` is selected for strict X.509 parsing, certificate construction in
 synthetic tests, RSA, hashes, and future A006/X002/E002 composition. It delegates
-to audited native cryptographic implementations; EBICSMIT implements no
+to audited native cryptographic implementations; EBICS Read implements no
 primitive. These are the only runtime dependencies.
 
 The transport protocol receives only a read-only request view plus the
@@ -53,11 +58,17 @@ private prepared request type. There is no factory that accepts caller XML or an
 order argument: the sole current builder constructs the exact HEV/H000 request.
 Future operations require equally specific fixed-shape builders.
 
+`EbicsBackend.probe_versions()` is the first complete vertical slice: it builds
+the fixed H000 request, performs the injected bounded HTTPS exchange, parses the
+response through the XML trust boundary, and returns advertisements from which
+only H005/03.00 may be selected. All other backend operations currently fail
+with a typed not-implemented error.
+
 ## Operation state
 
 Initialization and downloads are separate workflows:
 
-1. `probe_versions()` performs HEV/H000 and needs only TLS-authenticated
+1. `probe_versions(control)` performs HEV/H000 and needs only TLS-authenticated
    transport.
 2. `initialize_signature_key()` performs INI and produces letter data.
 3. `initialize_auth_encryption_keys()` performs HIA and produces letter data.
@@ -71,6 +82,10 @@ Downloaded HPB keys never become trusted as a side effect of network activity.
 Every operation after HEV receives an exact immutable `NegotiatedProtocol` from
 a fresh H005/03.00 negotiation; a backend cannot select H004 through the client
 contract.
+Every network-facing client and backend method receives an `OperationControl`.
+The same control instance covers the preliminary HEV negotiation and the
+requested H005 operation, so a backend cannot silently reset the whole-operation
+deadline between those steps.
 The client obtains trusted keys before invoking discovery or download backend
 methods, so an unpinned request cannot cross that boundary.
 

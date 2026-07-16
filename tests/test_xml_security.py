@@ -1,7 +1,8 @@
 import pytest
+from lxml import etree
 
-from ebicsmit import ResponseLimitError, XmlSecurityError
-from ebicsmit.xml import XmlLimits, parse_xml_document
+from ebics_read import ResponseLimitError, XmlSecurityError
+from ebics_read.xml import XmlLimits, parse_xml_document
 
 
 def test_rejects_dtd_and_entity_declarations() -> None:
@@ -85,3 +86,14 @@ def test_rejects_processing_instructions_and_malformed_xml() -> None:
 def test_parses_small_synthetic_namespace_document() -> None:
     root = parse_xml_document(b'<root xmlns="urn:synthetic"><child>ok</child></root>')
     assert root.tag == "{urn:synthetic}root"
+
+
+def test_preserves_namespace_prefixes_for_canonicalization() -> None:
+    payload = b'<r xmlns="urn:d" xmlns:p="urn:p"><p:c/></r>'
+
+    root = parse_xml_document(payload)
+
+    assert root.nsmap == {None: "urn:d", "p": "urn:p"}
+    assert etree.tostring(root, method="c14n") == (
+        b'<r xmlns="urn:d" xmlns:p="urn:p"><p:c></p:c></r>'
+    )

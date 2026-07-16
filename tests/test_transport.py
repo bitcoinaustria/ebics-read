@@ -10,7 +10,7 @@ from urllib.error import URLError
 
 import pytest
 
-from ebicsmit import (
+from ebics_read import (
     AmbiguousTransportError,
     HttpsTransport,
     OperationDeadlineError,
@@ -19,9 +19,9 @@ from ebicsmit import (
     ResponseLimitError,
     TransportError,
 )
-from ebicsmit.models import Bank
-from ebicsmit.testing import FixedClock
-from ebicsmit.transport import _PreparedTransportRequest, _RejectRedirects
+from ebics_read.models import Bank
+from ebics_read.testing import FixedClock
+from ebics_read.transport import _PreparedTransportRequest, _RejectRedirects
 
 
 class FakeResponse:
@@ -114,7 +114,7 @@ def test_default_transport_treats_interruption_as_ambiguous(
             raise URLError(TimeoutError("synthetic timeout"))
 
     monkeypatch.setattr(
-        "ebicsmit.transport.build_opener", lambda *handlers: BrokenOpener()
+        "ebics_read.transport.build_opener", lambda *handlers: BrokenOpener()
     )
     request = _PreparedTransportRequest._for_hev(
         Bank("https://bank.invalid/ebics", "HOST")
@@ -165,7 +165,7 @@ def test_operation_control_bounds_each_exchange(
             return OpenedResponse(b"response")
 
     monkeypatch.setattr(
-        "ebicsmit.transport.build_opener", lambda *handlers: RecordingOpener()
+        "ebics_read.transport.build_opener", lambda *handlers: RecordingOpener()
     )
     short = OperationControlStub(deadline=NOW + timedelta(seconds=5))
     result = HttpsTransport(clock=CLOCK, timeout_seconds=30).exchange(request, short)
@@ -185,9 +185,19 @@ def test_response_reader_bounds_declared_and_streamed_sizes() -> None:
         transport._read_bounded(  # type: ignore[arg-type]
             FakeResponse(b"", "invalid"), CONTROL
         )
+    with pytest.raises(TransportError, match="declared byte length"):
+        transport._read_bounded(FakeResponse(b"123", "4"), CONTROL)  # type: ignore[arg-type]
     assert (  # type: ignore[arg-type]
         transport._read_bounded(FakeResponse(b"1234"), CONTROL) == b"1234"
     )
+
+
+def test_response_reader_rejects_conflicting_http_framing() -> None:
+    response = FakeResponse(b"<root/>junk", "7")
+    response.headers["Transfer-Encoding"] = "chunked"
+
+    with pytest.raises(TransportError, match="conflicting"):
+        HttpsTransport(clock=CLOCK)._read_bounded(response, CONTROL)  # type: ignore[arg-type]
 
 
 def test_response_reader_handles_short_stream_reads() -> None:

@@ -6,13 +6,13 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from ebicsmit import (
+from ebics_read import (
     CertificateValidationError,
     SelfSignedH005BankCertificateProfile,
     UntrustedBankKeys,
     ValidatedBankCertificate,
 )
-from ebicsmit.testing import generate_synthetic_bank_keys
+from ebics_read.testing import generate_synthetic_bank_keys
 
 
 def certificate(

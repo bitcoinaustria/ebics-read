@@ -33,11 +33,19 @@ implementation code, tests, fixtures, or internal documentation was inspected.
 - Retrieved-page SHA-256: `f5053e3c0c44fc399b90bee77b45c91cbd8f43a12b7383c49dab391b8b3bdd16`
 - Artifact: `EBICS_3.0_schema_H005FinalVersion07-08-2017.zip`
 - Artifact SHA-256: `e2cec4c8b0a43c325e0e6a84f969834ac47f921cdfa1fd59f9784eb46599863d`
+- Archive member: `ebics_hev.xsd`
+- Archive-member SHA-256: `0f529a5220181ef8d99876daddafecd70a53717a2826ff13581147d769ec5056`
 - Status: normative archive downloaded and inspected outside the repository;
   no schema file is vendored
 - Learned: official H000 HEV, H005 envelope/order/type/key-management, S002,
   and W3C XMLDSig schema file set; exact namespaces are
-  `http://www.ebics.org/H000` and `urn:org:ebics:H005`
+  `http://www.ebics.org/H000` and `urn:org:ebics:H005`; the H000 schema makes
+  `xsi:schemaLocation` an optional instance hint rather than constraining it to
+  a particular local filename
+- Verification: the unmodified external `ebics_hev.xsd` validated EBICS Read's
+  generated request and synthetic response on 2026-07-15; the opt-in test does
+  not redistribute or resolve the schema over the network and rejects any leaf
+  file that does not match the recorded archive-member digest
 - Redistribution: not vendored for the same no-sublicensing ambiguity
 
 ### Common EBICS Implementation Guide index — version 03
