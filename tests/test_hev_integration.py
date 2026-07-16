@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from ebicsmit import (
+from ebics_read import (
     Bank,
     DeadlineControl,
     EbicsBackend,

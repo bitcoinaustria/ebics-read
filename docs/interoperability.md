@@ -5,7 +5,7 @@
 - **Synthetic:** original fixtures generated for this repository.
 - **Schema:** validated against separately downloaded official schemas with
   recorded hashes; an opt-in H000 test validates the HEV request and response
-  when `EBICSMIT_H000_XSD` names the separately supplied official file.
+  when `EBICS_READ_H000_XSD` names the separately supplied official file.
 - **Mock:** a verified local-TLS synthetic endpoint exercises fixed HEV request
   construction, HTTPS transport, bounded parsing, and H005 selection; the test
   is enabled in the default supported Python/OS CI matrix.

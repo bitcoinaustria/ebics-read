@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-import ebicsmit
-from ebicsmit import (
+import ebics_read
+from ebics_read import (
     Bank,
     BtfDescriptor,
     CapabilityDiscovery,
@@ -27,7 +27,7 @@ from ebicsmit import (
     UntrustedBankKeys,
     VersionDiscovery,
 )
-from ebicsmit.testing import (
+from ebics_read.testing import (
     InMemoryBankKeyTrustStore,
     generate_synthetic_bank_keys,
     synthetic_out_of_band_identity,
@@ -222,7 +222,7 @@ def test_public_client_has_only_explicit_protocol_operations() -> None:
         "send_payment",
         "btu",
     }
-    assert forbidden.isdisjoint(ebicsmit.__all__)
+    assert forbidden.isdisjoint(ebics_read.__all__)
 
 
 def test_every_network_operation_requires_caller_control() -> None:
@@ -242,7 +242,7 @@ def test_every_network_operation_requires_caller_control() -> None:
         assert (
             "control"
             in inspect.signature(
-                getattr(ebicsmit.ReadOnlyBackend, operation)
+                getattr(ebics_read.ReadOnlyBackend, operation)
             ).parameters
         )
 
@@ -268,7 +268,7 @@ def test_hpb_keys_are_untrusted_until_oob_acceptance(
     control = DummyControl()
     candidate = value.fetch_bank_keys(control)  # type: ignore[arg-type]
 
-    with pytest.raises(ebicsmit.BankKeyNotTrustedError):
+    with pytest.raises(ebics_read.BankKeyNotTrustedError):
         value.download(descriptor, DummySink(), control)  # type: ignore[arg-type]
     assert backend.calls == ["HEV", "HPB"]
 
@@ -286,6 +286,6 @@ def test_hpb_keys_are_untrusted_until_oob_acceptance(
 
 
 def test_generic_request_parameter_mapping_no_longer_exists() -> None:
-    assert "DownloadRequest" not in ebicsmit.__all__
-    assert not hasattr(ebicsmit, "DownloadRequest")
+    assert "DownloadRequest" not in ebics_read.__all__
+    assert not hasattr(ebics_read, "DownloadRequest")
     assert "parameters" not in inspect.signature(BtfDescriptor).parameters

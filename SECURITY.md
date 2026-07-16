@@ -1,9 +1,9 @@
 # Security policy
 
-EBICSMIT is pre-alpha and must not be used for production banking.
+EBICS Read is pre-alpha and must not be used for production banking.
 
 Report suspected vulnerabilities through
-[GitHub private vulnerability reporting](https://github.com/bitcoinaustria/ebicsmit/security/advisories/new).
+[GitHub private vulnerability reporting](https://github.com/bitcoinaustria/ebics-read/security/advisories/new).
 Do not open a public issue for an exploitable discrepancy.
 
 Never include bank credentials, endpoints, participant IDs, account data,

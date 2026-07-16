@@ -1,12 +1,12 @@
 import pytest
 
-from ebicsmit import (
+from ebics_read import (
     ProtocolError,
     UnknownReturnCodeError,
     UnsupportedProtocolVersionError,
     XmlSecurityError,
 )
-from ebicsmit.hev import H005_NAMESPACE, HEV_NAMESPACE, parse_hev_response
+from ebics_read.hev import H005_NAMESPACE, HEV_NAMESPACE, parse_hev_response
 
 
 def response(

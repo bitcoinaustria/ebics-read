@@ -1,19 +1,18 @@
-# EBICSMIT
+# EBICS Read
 
 An independent, MIT-licensed, read-only Python client for EBICS 3.0/H005.
 
 > [!WARNING]
-> EBICSMIT is pre-alpha foundation work, not a usable or production-ready EBICS
+> EBICS Read is pre-alpha foundation work, not a usable or production-ready EBICS
 > client. It has not completed cryptographic implementation or bank
 > interoperability testing.
 
-EBICSMIT is an independent open-source project. It is not affiliated with or
-endorsed by EBICS SC, the Massachusetts Institute of Technology, or any
-financial institution.
+EBICS Read is an independent open-source project. It is not affiliated with or
+endorsed by EBICS SC or any financial institution.
 
 EBICS is a registered trademark of EBICS SC. The name is used descriptively to
 identify the published protocol. This project uses no EBICS, “Ready for EBICS”,
-MIT, or bank logos and makes no certification or conformance claim.
+or bank logos and makes no certification or conformance claim.
 
 ## Boundary
 
@@ -55,6 +54,15 @@ official-schema evidence does not establish bank interoperability or conformance
 
 Python 3.10 or newer is supported.
 
+Packaging uses the distribution name `ebics-read`; Python code imports the
+underscore package:
+
+```python
+import ebics_read
+```
+
+For development:
+
 ```console
 python -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
@@ -77,6 +85,6 @@ recorded as agent review and is not described as an independent security audit.
 
 ## License
 
-EBICSMIT is licensed under the [MIT License](LICENSE). Official EBICS
+EBICS Read is licensed under the [MIT License](LICENSE). Official EBICS
 specifications, schemas, implementation guides, annexes, and code lists are not
 included and are not covered by this license.

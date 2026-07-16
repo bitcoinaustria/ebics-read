@@ -2,14 +2,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from ebicsmit import (
+from ebics_read import (
     AcceptedBankKeyIdentity,
     Bank,
     BankKeyMismatchError,
     BankKeyNotTrustedError,
     TrustedBankKeys,
 )
-from ebicsmit.testing import (
+from ebics_read.testing import (
     InMemoryBankKeyTrustStore,
     generate_synthetic_bank_keys,
     synthetic_out_of_band_identity,

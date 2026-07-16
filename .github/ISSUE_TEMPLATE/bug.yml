@@ -23,6 +23,6 @@ body:
   - type: input
     id: version
     attributes:
-      label: EBICSMIT and Python versions
+      label: EBICS Read and Python versions
     validations:
       required: true

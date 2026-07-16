@@ -4,6 +4,13 @@ All notable changes will be recorded here. The project has made no release.
 
 ## Unreleased
 
+### Changed
+
+- Renamed the pre-release project, repository, and distribution from `ebicsmit`
+  to `ebics-read`, the Python package to `ebics_read`, and the base exception
+  to `EbicsReadError` so the brand describes the structural read-only boundary
+  rather than embedding the license name.
+
 ### Added
 
 - Typed read-only operation and trust boundaries.

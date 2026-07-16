@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ebicsmit"
+name = "ebics-read"
 version = "0.0.0"
 description = "An independent, MIT-licensed, read-only Python client for EBICS 3.0/H005."
 readme = "README.md"
@@ -38,9 +38,9 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/bitcoinaustria/ebicsmit"
-Issues = "https://github.com/bitcoinaustria/ebicsmit/issues"
-Security = "https://github.com/bitcoinaustria/ebicsmit/security/advisories/new"
+Repository = "https://github.com/bitcoinaustria/ebics-read"
+Issues = "https://github.com/bitcoinaustria/ebics-read/issues"
+Security = "https://github.com/bitcoinaustria/ebics-read/security/advisories/new"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -49,17 +49,17 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-ebicsmit = ["py.typed"]
+ebics_read = ["py.typed"]
 
 [tool.pytest.ini_options]
-addopts = "--strict-config --strict-markers --cov=ebicsmit --cov-branch --cov-report=term-missing --cov-fail-under=85"
+addopts = "--strict-config --strict-markers --cov=ebics_read --cov-branch --cov-report=term-missing --cov-fail-under=85"
 testpaths = ["tests"]
 markers = [
   "schema: requires a separately supplied official EBICS schema artifact",
 ]
 
 [tool.coverage.run]
-source = ["ebicsmit"]
+source = ["ebics_read"]
 
 [tool.ruff]
 line-length = 88
@@ -71,6 +71,6 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "DTZ", "PTH", "RUF"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
-packages = ["ebicsmit"]
+packages = ["ebics_read"]
 mypy_path = "src"
 warn_unreachable = true

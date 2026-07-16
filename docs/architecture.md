@@ -2,7 +2,7 @@
 
 ## Objective
 
-EBICSMIT implements protocol mechanics between one caller and its bank while
+EBICS Read implements protocol mechanics between one caller and its bank while
 streaming opaque, verified document bytes into a caller-owned atomic sink. It
 returns compact trustworthy metadata and references. It does not own business policy,
 credentials, persistence, scheduling, document interpretation, or UI.
@@ -49,7 +49,7 @@ complete parser control surface.
 
 `cryptography` is selected for strict X.509 parsing, certificate construction in
 synthetic tests, RSA, hashes, and future A006/X002/E002 composition. It delegates
-to audited native cryptographic implementations; EBICSMIT implements no
+to audited native cryptographic implementations; EBICS Read implements no
 primitive. These are the only runtime dependencies.
 
 The transport protocol receives only a read-only request view plus the
