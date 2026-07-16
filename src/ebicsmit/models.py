@@ -5,21 +5,29 @@ from __future__ import annotations
 import hmac
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from hashlib import sha256
 from urllib.parse import urlsplit
 
-from .errors import BankKeyMismatchError, ConfigurationError
+from .errors import (
+    BankKeyMismatchError,
+    ConfigurationError,
+    UnsupportedProtocolVersionError,
+)
 from .orders import DISCOVERY_ORDERS, OrderType
 
 _PROTOCOL_FIELD_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,63}$")
 _IBAN = re.compile(r"^[A-Z]{2}[0-9A-Z]{13,32}$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
-_FINGERPRINT = re.compile(r"^[0-9A-F]{64}$")
+_SHA256_HEX = re.compile(r"^[0-9A-F]{64}$")
+_PROTOCOL_VERSION = re.compile(r"^H[0-9]{3}$")
+_VERSION_NUMBER = re.compile(r"^[0-9]{2}\.[0-9]{2}$")
 _TRUST_CREATION_TOKEN = object()
+_OOB_IDENTITY_TOKEN = object()
 _SESSION_CREATION_TOKEN = object()
+_CERTIFICATE_VALIDATION_TOKEN = object()
 
 
 def _require_token(name: str, value: str, *, optional: bool = False) -> str:
@@ -187,15 +195,29 @@ class ProtocolLimits:
 
 
 class DownloadPhase(str, Enum):
-    """BTD states; terminal failures cannot be resumed."""
+    """Security-meaningful BTD states; no positive receipt before acceptance."""
 
     NEW = "new"
     INITIALIZED = "initialized"
-    TRANSFERRING = "transferring"
+    RECEIVING_SEGMENTS = "receiving_segments"
+    SEGMENTS_RECEIVED = "segments_received"
+    SIGNATURES_AND_DIGESTS_VERIFIED = "signatures_and_digests_verified"
+    DECRYPTED = "decrypted"
+    CONTAINER_VERIFIED = "container_verified"
+    POSITIVE_RECEIPT_SENT = "positive_receipt_sent"
+    NEGATIVE_RECEIPT_SENT = "negative_receipt_sent"
+    RECEIPT_RESPONSE_VERIFIED = "receipt_response_verified"
+    RECEIPT_AMBIGUOUS = "receipt_ambiguous"
     COMPLETE = "complete"
-    RECEIPT_SENT = "receipt_sent"
-    VERIFIED = "verified"
+    NEGATIVE_COMPLETE = "negative_complete"
     FAILED = "failed"
+
+
+class ReceiptKind(str, Enum):
+    """Normative receipt code semantics."""
+
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -207,6 +229,9 @@ class DownloadSession:
     transaction_id: str | None = field(default=None, repr=False)
     next_segment: int = field(init=False)
     total_segments: int | None = field(init=False)
+    max_segments: int = field(init=False)
+    revision: int = field(init=False)
+    receipt_kind: ReceiptKind | None = field(init=False)
 
     def __init__(
         self,
@@ -215,6 +240,9 @@ class DownloadSession:
         transaction_id: str | None,
         next_segment: int,
         total_segments: int | None,
+        max_segments: int,
+        revision: int,
+        receipt_kind: ReceiptKind | None,
         *,
         _creation_token: object | None = None,
     ) -> None:
@@ -225,6 +253,9 @@ class DownloadSession:
         object.__setattr__(self, "transaction_id", transaction_id)
         object.__setattr__(self, "next_segment", next_segment)
         object.__setattr__(self, "total_segments", total_segments)
+        object.__setattr__(self, "max_segments", max_segments)
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "receipt_kind", receipt_kind)
         _require_identifier("session_id", self.session_id)
         if not isinstance(self.phase, DownloadPhase):
             raise TypeError("phase must be a DownloadPhase")
@@ -234,6 +265,8 @@ class DownloadSession:
             raise TypeError("next_segment must be an integer")
         if self.next_segment <= 0:
             raise ConfigurationError("next_segment must be positive")
+        if type(self.max_segments) is not int or self.max_segments <= 0:
+            raise ConfigurationError("max_segments must be a positive integer")
         if self.total_segments is not None:
             if type(self.total_segments) is not int:
                 raise TypeError("total_segments must be an integer")
@@ -241,6 +274,14 @@ class DownloadSession:
                 raise ConfigurationError("total_segments must be positive")
             if self.next_segment > self.total_segments + 1:
                 raise ConfigurationError("next_segment exceeds transaction bounds")
+            if self.total_segments > self.max_segments:
+                raise ConfigurationError("transaction exceeds configured segment limit")
+        if type(self.revision) is not int or self.revision < 0:
+            raise ConfigurationError("revision must be a non-negative integer")
+        if self.receipt_kind is not None and not isinstance(
+            self.receipt_kind, ReceiptKind
+        ):
+            raise TypeError("receipt_kind must be a ReceiptKind")
         self._validate_coherence()
 
     @classmethod
@@ -251,6 +292,9 @@ class DownloadSession:
         transaction_id: str | None,
         next_segment: int,
         total_segments: int | None,
+        max_segments: int,
+        revision: int,
+        receipt_kind: ReceiptKind | None,
     ) -> DownloadSession:
         return cls(
             session_id,
@@ -258,14 +302,28 @@ class DownloadSession:
             transaction_id,
             next_segment,
             total_segments,
+            max_segments,
+            revision,
+            receipt_kind,
             _creation_token=_SESSION_CREATION_TOKEN,
         )
 
     @classmethod
-    def start(cls, session_id: str) -> DownloadSession:
+    def start(cls, session_id: str, limits: ProtocolLimits) -> DownloadSession:
         """Start a transaction before a bank transaction ID exists."""
 
-        return cls._create(session_id, DownloadPhase.NEW, None, 1, None)
+        if not isinstance(limits, ProtocolLimits):
+            raise TypeError("limits must be ProtocolLimits")
+        return cls._create(
+            session_id,
+            DownloadPhase.NEW,
+            None,
+            1,
+            None,
+            limits.max_segments,
+            0,
+            None,
+        )
 
     @classmethod
     def restore(
@@ -276,11 +334,21 @@ class DownloadSession:
         transaction_id: str | None,
         next_segment: int,
         total_segments: int | None,
+        max_segments: int,
+        revision: int,
+        receipt_kind: ReceiptKind | None = None,
     ) -> DownloadSession:
         """Restore host-persisted state after applying every invariant."""
 
         return cls._create(
-            session_id, phase, transaction_id, next_segment, total_segments
+            session_id,
+            phase,
+            transaction_id,
+            next_segment,
+            total_segments,
+            max_segments,
+            revision,
+            receipt_kind,
         )
 
     def initialize(
@@ -295,6 +363,9 @@ class DownloadSession:
             transaction_id,
             1,
             total_segments,
+            self.max_segments,
+            self.revision + 1,
+            None,
         )
 
     def record_segment(self, segment_number: int) -> DownloadSession:
@@ -302,7 +373,10 @@ class DownloadSession:
 
         if type(segment_number) is not int:
             raise TypeError("segment_number must be an integer")
-        if self.phase not in {DownloadPhase.INITIALIZED, DownloadPhase.TRANSFERRING}:
+        if self.phase not in {
+            DownloadPhase.INITIALIZED,
+            DownloadPhase.RECEIVING_SEGMENTS,
+        }:
             raise ConfigurationError("segments are not accepted in this phase")
         if segment_number != self.next_segment:
             raise ConfigurationError("segment is missing, duplicate, or reordered")
@@ -310,44 +384,116 @@ class DownloadSession:
             raise ConfigurationError("initialized transaction metadata is missing")
         next_segment = segment_number + 1
         phase = (
-            DownloadPhase.COMPLETE
+            DownloadPhase.SEGMENTS_RECEIVED
             if segment_number == self.total_segments
-            else DownloadPhase.TRANSFERRING
+            else DownloadPhase.RECEIVING_SEGMENTS
         )
-        return self._create(
-            self.session_id,
-            phase,
-            self.transaction_id,
-            next_segment,
-            self.total_segments,
+        return self._advance(phase, next_segment=next_segment)
+
+    def mark_signatures_and_digests_verified(self) -> DownloadSession:
+        """Record authentication of every response and order-data digest."""
+
+        self._require_phase(DownloadPhase.SEGMENTS_RECEIVED)
+        return self._advance(DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED)
+
+    def mark_decrypted(self) -> DownloadSession:
+        """Record authenticated decryption after digest verification."""
+
+        self._require_phase(DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED)
+        return self._advance(DownloadPhase.DECRYPTED)
+
+    def mark_container_verified(self) -> DownloadSession:
+        """Record bounded decompression and complete container validation."""
+
+        self._require_phase(DownloadPhase.DECRYPTED)
+        return self._advance(DownloadPhase.CONTAINER_VERIFIED)
+
+    def mark_positive_receipt_sent(self) -> DownloadSession:
+        """Send code 0 only after the payload is fully acceptable."""
+
+        self._require_phase(DownloadPhase.CONTAINER_VERIFIED)
+        return self._advance(
+            DownloadPhase.POSITIVE_RECEIPT_SENT,
+            receipt_kind=ReceiptKind.POSITIVE,
         )
 
-    def mark_receipt_sent(self) -> DownloadSession:
-        """Record successful protocol receipt transmission."""
+    def mark_negative_receipt_sent(self) -> DownloadSession:
+        """Send code 1 after complete transfer but failed payload processing."""
 
-        self._require_phase(DownloadPhase.COMPLETE)
-        return self._with_phase(DownloadPhase.RECEIPT_SENT)
+        if self.phase not in {
+            DownloadPhase.SEGMENTS_RECEIVED,
+            DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED,
+            DownloadPhase.DECRYPTED,
+        }:
+            raise ConfigurationError("negative receipt is not valid in this phase")
+        return self._advance(
+            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            receipt_kind=ReceiptKind.NEGATIVE,
+        )
 
-    def mark_verified(self) -> DownloadSession:
-        """Mark a response fully authenticated only after the receipt."""
+    def mark_receipt_ambiguous(self) -> DownloadSession:
+        """Record an unknown receipt outcome after transmission began."""
 
-        self._require_phase(DownloadPhase.RECEIPT_SENT)
-        return self._with_phase(DownloadPhase.VERIFIED)
+        if self.phase not in {
+            DownloadPhase.POSITIVE_RECEIPT_SENT,
+            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+        }:
+            raise ConfigurationError("receipt ambiguity requires a sent receipt")
+        return self._advance(DownloadPhase.RECEIPT_AMBIGUOUS)
+
+    def mark_receipt_response_verified(self) -> DownloadSession:
+        """Record an authenticated response with the expected receipt return code."""
+
+        if self.phase not in {
+            DownloadPhase.POSITIVE_RECEIPT_SENT,
+            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_AMBIGUOUS,
+        }:
+            raise ConfigurationError("receipt response is not expected in this phase")
+        return self._advance(DownloadPhase.RECEIPT_RESPONSE_VERIFIED)
+
+    def finish(self) -> DownloadSession:
+        """Finish only after the receipt response has been authenticated."""
+
+        self._require_phase(DownloadPhase.RECEIPT_RESPONSE_VERIFIED)
+        target = (
+            DownloadPhase.COMPLETE
+            if self.receipt_kind is ReceiptKind.POSITIVE
+            else DownloadPhase.NEGATIVE_COMPLETE
+        )
+        return self._advance(target)
 
     def fail(self) -> DownloadSession:
         """Enter terminal failure from a non-terminal state."""
 
-        if self.phase in {DownloadPhase.VERIFIED, DownloadPhase.FAILED}:
+        if self.phase in {
+            DownloadPhase.POSITIVE_RECEIPT_SENT,
+            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
+            DownloadPhase.RECEIPT_AMBIGUOUS,
+            DownloadPhase.COMPLETE,
+            DownloadPhase.NEGATIVE_COMPLETE,
+            DownloadPhase.FAILED,
+        }:
             raise ConfigurationError("terminal download session cannot be reused")
-        return self._with_phase(DownloadPhase.FAILED)
+        return self._advance(DownloadPhase.FAILED)
 
-    def _with_phase(self, phase: DownloadPhase) -> DownloadSession:
+    def _advance(
+        self,
+        phase: DownloadPhase,
+        *,
+        next_segment: int | None = None,
+        receipt_kind: ReceiptKind | None = None,
+    ) -> DownloadSession:
         return self._create(
             self.session_id,
             phase,
             self.transaction_id,
-            self.next_segment,
+            self.next_segment if next_segment is None else next_segment,
             self.total_segments,
+            self.max_segments,
+            self.revision + 1,
+            self.receipt_kind if receipt_kind is None else receipt_kind,
         )
 
     def _require_phase(self, phase: DownloadPhase) -> None:
@@ -360,11 +506,16 @@ class DownloadSession:
                 self.transaction_id is not None
                 or self.total_segments is not None
                 or self.next_segment != 1
+                or self.receipt_kind is not None
             ):
                 raise ConfigurationError("new session contains transaction state")
             return
         if self.phase is DownloadPhase.FAILED and self.transaction_id is None:
-            if self.total_segments is not None or self.next_segment != 1:
+            if (
+                self.total_segments is not None
+                or self.next_segment != 1
+                or self.receipt_kind is not None
+            ):
                 raise ConfigurationError(
                     "failed pre-initialization state is incoherent"
                 )
@@ -374,14 +525,21 @@ class DownloadSession:
         finished = self.next_segment == self.total_segments + 1
         if self.phase is DownloadPhase.INITIALIZED and self.next_segment != 1:
             raise ConfigurationError("initialized session must begin at segment one")
-        if self.phase is DownloadPhase.TRANSFERRING and self.next_segment < 2:
-            raise ConfigurationError("transferring session has no recorded segment")
+        if self.phase is DownloadPhase.RECEIVING_SEGMENTS and self.next_segment < 2:
+            raise ConfigurationError("receiving session has no recorded segment")
         if (
             self.phase
             in {
+                DownloadPhase.SEGMENTS_RECEIVED,
+                DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED,
+                DownloadPhase.DECRYPTED,
+                DownloadPhase.CONTAINER_VERIFIED,
+                DownloadPhase.POSITIVE_RECEIPT_SENT,
+                DownloadPhase.NEGATIVE_RECEIPT_SENT,
+                DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
+                DownloadPhase.RECEIPT_AMBIGUOUS,
                 DownloadPhase.COMPLETE,
-                DownloadPhase.RECEIPT_SENT,
-                DownloadPhase.VERIFIED,
+                DownloadPhase.NEGATIVE_COMPLETE,
             }
             and not finished
         ):
@@ -390,11 +548,41 @@ class DownloadSession:
             self.phase
             in {
                 DownloadPhase.INITIALIZED,
-                DownloadPhase.TRANSFERRING,
+                DownloadPhase.RECEIVING_SEGMENTS,
             }
             and finished
         ):
             raise ConfigurationError("active session has no remaining segment")
+        receipt_phases = {
+            DownloadPhase.POSITIVE_RECEIPT_SENT,
+            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
+            DownloadPhase.RECEIPT_AMBIGUOUS,
+            DownloadPhase.COMPLETE,
+            DownloadPhase.NEGATIVE_COMPLETE,
+        }
+        if (self.phase in receipt_phases) != (self.receipt_kind is not None):
+            raise ConfigurationError("receipt state and receipt kind disagree")
+        if (
+            self.phase is DownloadPhase.POSITIVE_RECEIPT_SENT
+            and self.receipt_kind is not ReceiptKind.POSITIVE
+        ):
+            raise ConfigurationError("positive receipt state has wrong receipt kind")
+        if (
+            self.phase is DownloadPhase.NEGATIVE_RECEIPT_SENT
+            and self.receipt_kind is not ReceiptKind.NEGATIVE
+        ):
+            raise ConfigurationError("negative receipt state has wrong receipt kind")
+        if (
+            self.phase is DownloadPhase.COMPLETE
+            and self.receipt_kind is not ReceiptKind.POSITIVE
+        ):
+            raise ConfigurationError("complete session requires a positive receipt")
+        if (
+            self.phase is DownloadPhase.NEGATIVE_COMPLETE
+            and self.receipt_kind is not ReceiptKind.NEGATIVE
+        ):
+            raise ConfigurationError("negative completion requires a negative receipt")
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,8 +593,38 @@ class ProtocolVersion:
     version_number: str
 
     def __post_init__(self) -> None:
-        _require_token("protocol_version", self.protocol_version)
-        _require_token("version_number", self.version_number)
+        if _PROTOCOL_VERSION.fullmatch(self.protocol_version) is None:
+            raise ConfigurationError(
+                "protocol_version must match H followed by 3 digits"
+            )
+        if _VERSION_NUMBER.fullmatch(self.version_number) is None:
+            raise ConfigurationError("version_number must match NN.NN")
+
+
+@dataclass(frozen=True, slots=True)
+class NegotiatedProtocol:
+    """The one protocol/schema pair implemented by this release."""
+
+    protocol_version: str = "H005"
+    version_number: str = "03.00"
+    request_namespace: str = "urn:org:ebics:H005"
+    hev_namespace: str = "http://www.ebics.org/H000"
+
+    def __post_init__(self) -> None:
+        if (
+            self.protocol_version,
+            self.version_number,
+            self.request_namespace,
+            self.hev_namespace,
+        ) != (
+            "H005",
+            "03.00",
+            "urn:org:ebics:H005",
+            "http://www.ebics.org/H000",
+        ):
+            raise UnsupportedProtocolVersionError(
+                "negotiated protocol must be exact H005/03.00 with H000/H005 namespaces"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,6 +643,29 @@ class VersionDiscovery:
             )
         if len(set(self.versions)) != len(self.versions):
             raise ConfigurationError("version discovery contains duplicate versions")
+        by_protocol: dict[str, str] = {}
+        by_version: dict[str, str] = {}
+        for value in self.versions:
+            existing_version = by_protocol.setdefault(
+                value.protocol_version, value.version_number
+            )
+            existing_protocol = by_version.setdefault(
+                value.version_number, value.protocol_version
+            )
+            if existing_version != value.version_number:
+                raise ConfigurationError("conflicting protocol advertisement")
+            if existing_protocol != value.protocol_version:
+                raise ConfigurationError("conflicting version advertisement")
+
+    def select_h005(self) -> NegotiatedProtocol:
+        """Select exactly H005/03.00; never downgrade or guess a revision."""
+
+        supported = ProtocolVersion("H005", "03.00")
+        if supported not in self.versions:
+            raise UnsupportedProtocolVersionError(
+                "bank did not advertise exact supported protocol H005/03.00"
+            )
+        return NegotiatedProtocol()
 
 
 @dataclass(frozen=True, slots=True)
@@ -472,72 +713,161 @@ class CapabilityDiscovery:
 
 
 @dataclass(frozen=True, slots=True)
-class KeyFingerprint:
-    """A SHA-256 certificate fingerprint in printable EBICS letter form."""
+class CertificateFingerprint:
+    """Generic SHA-256 identity of one exact DER certificate."""
 
     sha256_hex: str
 
     def __post_init__(self) -> None:
-        if _FINGERPRINT.fullmatch(self.sha256_hex) is None:
+        if _SHA256_HEX.fullmatch(self.sha256_hex) is None:
             raise ConfigurationError(
-                "fingerprint must be 64 uppercase hexadecimal characters"
+                "certificate fingerprint must be 64 uppercase hexadecimal characters"
             )
 
     @classmethod
-    def from_certificate(cls, certificate_der: bytes) -> KeyFingerprint:
-        if not certificate_der:
-            raise ConfigurationError("certificate DER must not be empty")
-        return cls(sha256(bytes(certificate_der)).hexdigest().upper())
+    def from_der(cls, certificate_der: bytes) -> CertificateFingerprint:
+        if not isinstance(certificate_der, bytes) or not certificate_der:
+            raise ConfigurationError("certificate DER must be non-empty bytes")
+        return cls(sha256(certificate_der).hexdigest().upper())
 
 
 @dataclass(frozen=True, slots=True)
-class BankKeyFingerprints:
-    authentication: KeyFingerprint
-    encryption: KeyFingerprint
+class EbicsPublicKeyDigest:
+    """Normative H005 SHA-256 digest of a complete DER certificate."""
+
+    sha256_hex: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.authentication, KeyFingerprint) or not isinstance(
-            self.encryption, KeyFingerprint
-        ):
-            raise TypeError("bank-key fingerprints must be KeyFingerprint values")
+        if _SHA256_HEX.fullmatch(self.sha256_hex) is None:
+            raise ConfigurationError(
+                "EBICS public-key digest must be 64 uppercase hexadecimal characters"
+            )
+
+    @classmethod
+    def from_h005_certificate_der(cls, certificate_der: bytes) -> EbicsPublicKeyDigest:
+        """Apply the H005 certificate-DER digest defined by EBICS 3.0.2."""
+
+        if not isinstance(certificate_der, bytes) or not certificate_der:
+            raise ConfigurationError("certificate DER must be non-empty bytes")
+        return cls(sha256(certificate_der).hexdigest().upper())
 
 
-@dataclass(frozen=True, slots=True)
-class UntrustedBankKeys:
-    """HPB key material that must not authenticate any response yet."""
+@dataclass(frozen=True, slots=True, init=False)
+class AcceptedBankKeyIdentity:
+    """Two OOB-provided EBICS identities accepted together for one bank."""
 
-    authentication_certificate_der: bytes = field(repr=False)
-    encryption_certificate_der: bytes = field(repr=False)
-    fingerprints: BankKeyFingerprints = field(init=False)
+    authentication: EbicsPublicKeyDigest = field(init=False)
+    encryption: EbicsPublicKeyDigest = field(init=False)
 
-    def __post_init__(self) -> None:
-        authentication = bytes(self.authentication_certificate_der)
-        encryption = bytes(self.encryption_certificate_der)
-        object.__setattr__(self, "authentication_certificate_der", authentication)
-        object.__setattr__(self, "encryption_certificate_der", encryption)
+    def __init__(
+        self,
+        authentication: EbicsPublicKeyDigest,
+        encryption: EbicsPublicKeyDigest,
+        *,
+        _oob_token: object | None = None,
+    ) -> None:
+        if _oob_token is not _OOB_IDENTITY_TOKEN:
+            raise TypeError(
+                "accepted bank-key identity must be entered through from_out_of_band"
+            )
+        object.__setattr__(self, "authentication", authentication)
+        object.__setattr__(self, "encryption", encryption)
+
+    @classmethod
+    def from_out_of_band(
+        cls, authentication_sha256_hex: str, encryption_sha256_hex: str
+    ) -> AcceptedBankKeyIdentity:
+        """Parse values independently transcribed from the bank's OOB channel."""
+
+        return cls(
+            EbicsPublicKeyDigest(authentication_sha256_hex),
+            EbicsPublicKeyDigest(encryption_sha256_hex),
+            _oob_token=_OOB_IDENTITY_TOKEN,
+        )
+
+
+class BankKeyRole(str, Enum):
+    """The two bank key roles transported by HPB in H005."""
+
+    AUTHENTICATION = "authentication"
+    ENCRYPTION = "encryption"
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ValidatedBankCertificate:
+    """Strictly parsed profile metadata; validity does not imply trust."""
+
+    role: BankKeyRole = field(init=False)
+    certificate_der: bytes = field(repr=False, init=False)
+    certificate_fingerprint: CertificateFingerprint = field(init=False)
+    ebics_public_key_digest: EbicsPublicKeyDigest = field(init=False)
+    rsa_key_size: int = field(init=False)
+
+    def __init__(
+        self,
+        role: BankKeyRole,
+        certificate_der: bytes,
+        rsa_key_size: int,
+        *,
+        _validation_token: object | None = None,
+    ) -> None:
+        if _validation_token is not _CERTIFICATE_VALIDATION_TOKEN:
+            raise TypeError(
+                "validated bank certificates are created only by a certificate profile"
+            )
+        certificate = bytes(certificate_der)
+        object.__setattr__(self, "role", role)
+        object.__setattr__(self, "certificate_der", certificate)
+        object.__setattr__(self, "rsa_key_size", rsa_key_size)
         object.__setattr__(
             self,
-            "fingerprints",
-            BankKeyFingerprints(
-                authentication=KeyFingerprint.from_certificate(authentication),
-                encryption=KeyFingerprint.from_certificate(encryption),
-            ),
+            "certificate_fingerprint",
+            CertificateFingerprint.from_der(certificate),
+        )
+        object.__setattr__(
+            self,
+            "ebics_public_key_digest",
+            EbicsPublicKeyDigest.from_h005_certificate_der(certificate),
         )
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class TrustedBankKeys:
-    """Bank keys returned only after explicit out-of-band fingerprint acceptance."""
+class UntrustedBankKeys:
+    """Validated HPB certificates that remain unusable before OOB acceptance."""
 
-    authentication_certificate_der: bytes = field(repr=False, init=False)
-    encryption_certificate_der: bytes = field(repr=False, init=False)
-    fingerprints: BankKeyFingerprints
+    authentication: ValidatedBankCertificate = field(repr=False, init=False)
+    encryption: ValidatedBankCertificate = field(repr=False, init=False)
 
     def __init__(
         self,
-        authentication_certificate_der: bytes,
-        encryption_certificate_der: bytes,
-        fingerprints: BankKeyFingerprints,
+        authentication: ValidatedBankCertificate,
+        encryption: ValidatedBankCertificate,
+        *,
+        _validation_token: object | None = None,
+    ) -> None:
+        if _validation_token is not _CERTIFICATE_VALIDATION_TOKEN:
+            raise TypeError("HPB candidates require strict certificate validation")
+        if authentication.role is not BankKeyRole.AUTHENTICATION:
+            raise ConfigurationError("authentication certificate has the wrong role")
+        if encryption.role is not BankKeyRole.ENCRYPTION:
+            raise ConfigurationError("encryption certificate has the wrong role")
+        object.__setattr__(self, "authentication", authentication)
+        object.__setattr__(self, "encryption", encryption)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class TrustedBankKeys:
+    """Bank keys returned only after explicit out-of-band digest acceptance."""
+
+    authentication: ValidatedBankCertificate = field(repr=False, init=False)
+    encryption: ValidatedBankCertificate = field(repr=False, init=False)
+    accepted_identity: AcceptedBankKeyIdentity = field(init=False)
+
+    def __init__(
+        self,
+        authentication: ValidatedBankCertificate,
+        encryption: ValidatedBankCertificate,
+        accepted_identity: AcceptedBankKeyIdentity,
         *,
         _creation_token: object | None = None,
     ) -> None:
@@ -545,40 +875,39 @@ class TrustedBankKeys:
             raise TypeError(
                 "trusted bank keys are created only by explicit OOB acceptance"
             )
-        object.__setattr__(
-            self,
-            "authentication_certificate_der",
-            bytes(authentication_certificate_der),
-        )
-        object.__setattr__(
-            self, "encryption_certificate_der", bytes(encryption_certificate_der)
-        )
-        object.__setattr__(self, "fingerprints", fingerprints)
+        object.__setattr__(self, "authentication", authentication)
+        object.__setattr__(self, "encryption", encryption)
+        object.__setattr__(self, "accepted_identity", accepted_identity)
 
     @classmethod
     def accept_out_of_band(
         cls,
         candidate: UntrustedBankKeys,
-        expected: BankKeyFingerprints,
+        expected: AcceptedBankKeyIdentity,
     ) -> TrustedBankKeys:
-        """Create trusted keys only through an explicit fingerprint comparison."""
+        """Create trusted keys only through an explicit EBICS-digest comparison."""
 
-        actual = candidate.fingerprints
+        if not isinstance(candidate, UntrustedBankKeys):
+            raise TypeError("candidate must be UntrustedBankKeys")
+        if not isinstance(expected, AcceptedBankKeyIdentity):
+            raise TypeError("expected must be AcceptedBankKeyIdentity")
         if not (
             hmac.compare_digest(
-                actual.authentication.sha256_hex.encode("ascii"),
+                candidate.authentication.ebics_public_key_digest.sha256_hex.encode(
+                    "ascii"
+                ),
                 expected.authentication.sha256_hex.encode("ascii"),
             )
             and hmac.compare_digest(
-                actual.encryption.sha256_hex.encode("ascii"),
+                candidate.encryption.ebics_public_key_digest.sha256_hex.encode("ascii"),
                 expected.encryption.sha256_hex.encode("ascii"),
             )
         ):
-            raise BankKeyMismatchError("bank-key fingerprints do not match OOB values")
+            raise BankKeyMismatchError("bank-key identities do not match OOB values")
         return cls(
-            candidate.authentication_certificate_der,
-            candidate.encryption_certificate_der,
-            actual,
+            candidate.authentication,
+            candidate.encryption,
+            expected,
             _creation_token=_TRUST_CREATION_TOKEN,
         )
 
@@ -589,7 +918,7 @@ class InitializationLetter:
 
     order: OrderType
     content: bytes = field(repr=False)
-    fingerprints: tuple[KeyFingerprint, ...]
+    public_key_digests: tuple[EbicsPublicKeyDigest, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.order, OrderType):
@@ -597,41 +926,136 @@ class InitializationLetter:
         if self.order not in {OrderType.INI, OrderType.HIA}:
             raise ConfigurationError("initialization letter order must be INI or HIA")
         object.__setattr__(self, "content", bytes(self.content))
-        object.__setattr__(self, "fingerprints", tuple(self.fingerprints))
-        if not all(isinstance(value, KeyFingerprint) for value in self.fingerprints):
-            raise TypeError("fingerprints must contain KeyFingerprint values")
-        if not self.content or not self.fingerprints:
+        object.__setattr__(self, "public_key_digests", tuple(self.public_key_digests))
+        if not all(
+            isinstance(value, EbicsPublicKeyDigest) for value in self.public_key_digests
+        ):
+            raise TypeError(
+                "public_key_digests must contain EbicsPublicKeyDigest values"
+            )
+        if not self.content or not self.public_key_digests:
             raise ConfigurationError(
-                "initialization letter content and fingerprints are required"
+                "initialization letter content and public-key digests are required"
             )
 
 
 @dataclass(frozen=True, slots=True)
 class DownloadedDocument:
-    """Verified opaque document bytes and trustworthy BTF metadata."""
+    """Small verified result referring to bytes atomically committed by a sink."""
 
-    service_name: str
-    message_name: str
-    message_version: str
-    variant: str
-    format: str
-    service_option: str
-    container_type: ContainerType
-    content: bytes = field(repr=False)
-    scope: str | None = None
+    provenance: RetrievalProvenance
+    content_sha256: ContentSha256
+    size_bytes: int
+    sink_reference: str = field(repr=False)
+    zip_members: tuple[ZipMemberIdentity, ...] = ()
 
     def __post_init__(self) -> None:
-        descriptor = BtfDescriptor(
-            service_name=self.service_name,
-            scope=self.scope,
-            message_name=self.message_name,
-            message_version=self.message_version,
-            variant=self.variant,
-            format=self.format,
-            service_option=self.service_option,
-            container_type=self.container_type,
-        )
-        object.__setattr__(self, "content", bytes(self.content))
-        if not self.content:
-            raise ConfigurationError("downloaded document content must not be empty")
-        del descriptor
+        if not isinstance(self.provenance, RetrievalProvenance):
+            raise TypeError("provenance must be RetrievalProvenance")
+        if not isinstance(self.content_sha256, ContentSha256):
+            raise TypeError("content_sha256 must be ContentSha256")
+        if type(self.size_bytes) is not int or self.size_bytes <= 0:
+            raise ConfigurationError("size_bytes must be a positive integer")
+        if (
+            not isinstance(self.sink_reference, str)
+            or not self.sink_reference
+            or len(self.sink_reference) > 256
+            or any(ord(value) < 0x20 for value in self.sink_reference)
+        ):
+            raise ConfigurationError("sink_reference must be bounded printable text")
+        object.__setattr__(self, "zip_members", tuple(self.zip_members))
+        if not all(isinstance(value, ZipMemberIdentity) for value in self.zip_members):
+            raise TypeError("zip_members must contain ZipMemberIdentity values")
+
+
+@dataclass(frozen=True, slots=True)
+class ContentSha256:
+    """SHA-256 content identity for deduplication without retaining bytes."""
+
+    sha256_hex: str
+
+    def __post_init__(self) -> None:
+        if _SHA256_HEX.fullmatch(self.sha256_hex) is None:
+            raise ConfigurationError(
+                "content SHA-256 must be 64 uppercase hex characters"
+            )
+
+    @classmethod
+    def from_bytes(cls, content: bytes) -> ContentSha256:
+        if not isinstance(content, bytes):
+            raise TypeError("content must be bytes")
+        return cls(sha256(content).hexdigest().upper())
+
+
+@dataclass(frozen=True, slots=True)
+class ZipMemberIdentity:
+    """Sanitized ZIP identity: stable index and hashes, never an unsafe path."""
+
+    index: int
+    name_sha256: ContentSha256
+    content_sha256: ContentSha256
+    size_bytes: int
+
+    def __post_init__(self) -> None:
+        if type(self.index) is not int or self.index < 0:
+            raise ConfigurationError("ZIP member index must be non-negative")
+        if not isinstance(self.name_sha256, ContentSha256) or not isinstance(
+            self.content_sha256, ContentSha256
+        ):
+            raise TypeError("ZIP identities must use ContentSha256 values")
+        if type(self.size_bytes) is not int or self.size_bytes < 0:
+            raise ConfigurationError("ZIP member size must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalProvenance:
+    """Verified protocol and descriptor metadata attached to a committed document."""
+
+    descriptor: BtfDescriptor
+    protocol: NegotiatedProtocol
+    retrieved_at: datetime
+    transaction_id_sha256: ContentSha256
+    segment_count: int
+    bank_host_id: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.descriptor, BtfDescriptor):
+            raise TypeError("descriptor must be BtfDescriptor")
+        if not isinstance(self.protocol, NegotiatedProtocol):
+            raise TypeError("protocol must be NegotiatedProtocol")
+        if self.retrieved_at.tzinfo is None or self.retrieved_at.utcoffset() is None:
+            raise ConfigurationError("retrieved_at must be timezone-aware")
+        if not isinstance(self.transaction_id_sha256, ContentSha256):
+            raise TypeError("transaction_id_sha256 must be ContentSha256")
+        if type(self.segment_count) is not int or self.segment_count <= 0:
+            raise ConfigurationError("segment_count must be positive")
+        _require_identifier("bank_host_id", self.bank_host_id)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionLease:
+    """Exclusive caller-store lease used with compare-and-swap session updates."""
+
+    session_id: str = field(repr=False)
+    owner_token: bytes = field(repr=False)
+    expires_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_identifier("session_id", self.session_id)
+        token = bytes(self.owner_token)
+        if len(token) < 16:
+            raise ConfigurationError("lease owner token must contain at least 16 bytes")
+        object.__setattr__(self, "owner_token", token)
+        if self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None:
+            raise ConfigurationError("lease expiry must be timezone-aware")
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentReference:
+    """Opaque reference to sensitive partial ciphertext in caller-controlled storage."""
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, str) or not self.value or len(self.value) > 256:
+            raise ConfigurationError("segment reference must be bounded text")

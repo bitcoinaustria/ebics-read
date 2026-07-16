@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import NoReturn
 
@@ -11,6 +12,10 @@ from .errors import ResponseLimitError, XmlSecurityError
 
 _XINCLUDE_NAMESPACE = "http://www.w3.org/2001/XInclude"
 _ID_LOCAL_NAMES = frozenset({"Id", "ID", "id"})
+_XML_DECLARATION = re.compile(
+    rb"\A(?:\xef\xbb\xbf)?<\?xml\s+[^?]*?encoding\s*=\s*(['\"])([^'\"]+)\1[^?]*\?>",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +27,11 @@ class XmlLimits:
     max_elements: int = 100_000
     max_text_bytes: int = 8 * 1024 * 1024
     max_total_text_bytes: int = 16 * 1024 * 1024
+    max_attributes_per_element: int = 64
+    max_total_attribute_bytes: int = 1024 * 1024
+    max_namespaces: int = 256
+    max_namespace_bytes: int = 1024
+    max_total_namespace_bytes: int = 16 * 1024
 
     def __post_init__(self) -> None:
         values = (
@@ -30,6 +40,11 @@ class XmlLimits:
             self.max_elements,
             self.max_text_bytes,
             self.max_total_text_bytes,
+            self.max_attributes_per_element,
+            self.max_total_attribute_bytes,
+            self.max_namespaces,
+            self.max_namespace_bytes,
+            self.max_total_namespace_bytes,
         )
         if not all(type(value) is int for value in values):
             raise TypeError("all XML limits must be integers")
@@ -47,6 +62,13 @@ def parse_xml_document(data: bytes, limits: XmlLimits | None = None) -> etree._E
         raise ResponseLimitError("XML input exceeds configured byte limit")
     if b"\x00" in data:
         raise XmlSecurityError("XML input must use a single-byte UTF-8 encoding")
+    try:
+        data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise XmlSecurityError("XML input must be valid UTF-8") from exc
+    declaration = _XML_DECLARATION.match(data)
+    if declaration is not None and declaration.group(2).upper() != b"UTF-8":
+        raise XmlSecurityError("XML declaration must specify UTF-8")
     if b"<!DOCTYPE" in data:
         raise XmlSecurityError("DOCTYPE declarations are forbidden")
     target = _BoundedTreeBuilder(active)
@@ -82,6 +104,9 @@ class _BoundedTreeBuilder:
         self._current_text = 0
         self._total_text = 0
         self._seen_ids: set[str] = set()
+        self._total_attribute_bytes = 0
+        self._namespaces = 0
+        self._total_namespace_bytes = 0
         self._failure: ResponseLimitError | XmlSecurityError | None = None
 
     def start(
@@ -96,12 +121,23 @@ class _BoundedTreeBuilder:
             self._fail(ResponseLimitError("XML element count exceeds configured limit"))
         if self._depth > self._limits.max_depth:
             self._fail(ResponseLimitError("XML depth exceeds configured limit"))
+        if len(attributes) > self._limits.max_attributes_per_element:
+            self._fail(
+                ResponseLimitError("XML attribute count exceeds configured limit")
+            )
         name = etree.QName(tag)
         if name.namespace == _XINCLUDE_NAMESPACE:
             self._fail(XmlSecurityError("XInclude elements are forbidden"))
         for attribute, attribute_value in attributes.items():
             if not isinstance(attribute, str) or not isinstance(attribute_value, str):
                 self._fail(XmlSecurityError("XML attributes must be text"))
+            self._total_attribute_bytes += len(attribute.encode("utf-8")) + len(
+                attribute_value.encode("utf-8")
+            )
+            if self._total_attribute_bytes > self._limits.max_total_attribute_bytes:
+                self._fail(
+                    ResponseLimitError("XML attributes exceed configured byte limit")
+                )
             if etree.QName(attribute).localname in _ID_LOCAL_NAMES:
                 if attribute_value in self._seen_ids:
                     self._fail(XmlSecurityError("duplicate XML ID detected"))
@@ -117,6 +153,31 @@ class _BoundedTreeBuilder:
         if self._total_text > self._limits.max_total_text_bytes:
             self._fail(ResponseLimitError("XML text exceeds configured total limit"))
         self._builder.data(data)
+
+    def start_ns(self, prefix: str | bytes | None, uri: str | bytes) -> None:
+        if (prefix is not None and not isinstance(prefix, str)) or not isinstance(
+            uri, str
+        ):
+            self._fail(XmlSecurityError("XML namespaces must be UTF-8 text"))
+        prefix_bytes = 0 if prefix is None else len(prefix.encode("utf-8"))
+        namespace_bytes = prefix_bytes + len(uri.encode("utf-8"))
+        self._namespaces += 1
+        self._total_namespace_bytes += namespace_bytes
+        if self._namespaces > self._limits.max_namespaces:
+            self._fail(
+                ResponseLimitError("XML namespace count exceeds configured limit")
+            )
+        if namespace_bytes > self._limits.max_namespace_bytes:
+            self._fail(
+                ResponseLimitError("XML namespace exceeds configured byte limit")
+            )
+        if self._total_namespace_bytes > self._limits.max_total_namespace_bytes:
+            self._fail(
+                ResponseLimitError("XML namespaces exceed configured total byte limit")
+            )
+
+    def end_ns(self, prefix: str | bytes | None) -> None:
+        return None
 
     def end(self, tag: str | bytes) -> None:
         self._builder.end(tag)

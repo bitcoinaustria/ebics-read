@@ -13,13 +13,15 @@ from ebicsmit import (
     DownloadOptions,
     DownloadPhase,
     DownloadSession,
+    EbicsPublicKeyDigest,
     InitializationLetter,
-    KeyFingerprint,
+    NegotiatedProtocol,
     OrderType,
     ProtocolLimits,
     ProtocolVersion,
     ServiceCapability,
     Subscriber,
+    UnsupportedProtocolVersionError,
     VersionDiscovery,
 )
 
@@ -82,7 +84,7 @@ def test_dates_and_accounts_are_typed() -> None:
 
 
 def test_download_state_machine_rejects_skips_and_terminal_reuse() -> None:
-    state = DownloadSession.start("local-session")
+    state = DownloadSession.start("local-session", ProtocolLimits(max_segments=2))
     with pytest.raises(ConfigurationError):
         state.record_segment(1)
 
@@ -90,18 +92,27 @@ def test_download_state_machine_rejects_skips_and_terminal_reuse() -> None:
     with pytest.raises(ConfigurationError):
         state.record_segment(2)
     state = state.record_segment(1)
-    assert state.phase is DownloadPhase.TRANSFERRING
+    assert state.phase is DownloadPhase.RECEIVING_SEGMENTS
     state = state.record_segment(2)
+    assert state.phase is DownloadPhase.SEGMENTS_RECEIVED
+    with pytest.raises(ConfigurationError):
+        state.mark_positive_receipt_sent()
+    state = state.mark_signatures_and_digests_verified()
+    state = state.mark_decrypted()
+    state = state.mark_container_verified()
+    state = state.mark_positive_receipt_sent()
+    state = state.mark_receipt_response_verified()
+    state = state.finish()
     assert state.phase is DownloadPhase.COMPLETE
-    state = state.mark_receipt_sent()
-    state = state.mark_verified()
     with pytest.raises(ConfigurationError):
         state.fail()
 
 
 def test_download_state_cannot_be_forged_or_restored_incoherently() -> None:
     with pytest.raises(TypeError):
-        DownloadSession("session", DownloadPhase.VERIFIED, None, 1, None)  # type: ignore[call-arg]
+        DownloadSession(  # type: ignore[call-arg]
+            "session", DownloadPhase.COMPLETE, None, 1, None, 10, 0, None
+        )
     with pytest.raises(ConfigurationError):
         DownloadSession.restore(
             session_id="session",
@@ -109,6 +120,8 @@ def test_download_state_cannot_be_forged_or_restored_incoherently() -> None:
             transaction_id="transaction",
             next_segment=1,
             total_segments=2,
+            max_segments=2,
+            revision=1,
         )
     with pytest.raises(ConfigurationError):
         DownloadSession.restore(
@@ -117,7 +130,23 @@ def test_download_state_cannot_be_forged_or_restored_incoherently() -> None:
             transaction_id="transaction",
             next_segment=2,
             total_segments=3,
+            max_segments=3,
+            revision=1,
         )
+    with pytest.raises(ConfigurationError):
+        DownloadSession.start("session", ProtocolLimits(max_segments=1)).initialize(
+            transaction_id="transaction", total_segments=2
+        )
+
+
+def test_negative_receipt_and_ambiguous_receipt_are_explicit() -> None:
+    state = DownloadSession.start("session", ProtocolLimits(max_segments=1))
+    state = state.initialize(transaction_id="transaction", total_segments=1)
+    state = state.record_segment(1)
+    negative = state.mark_negative_receipt_sent()
+    ambiguous = negative.mark_receipt_ambiguous()
+    finished = ambiguous.mark_receipt_response_verified().finish()
+    assert finished.phase is DownloadPhase.NEGATIVE_COMPLETE
 
 
 def test_protocol_limits_are_immutable_and_consistent() -> None:
@@ -140,16 +169,31 @@ def test_nested_models_reject_enum_lookalikes_and_wrong_values() -> None:
     with pytest.raises(TypeError):
         ServiceCapability("not-a-descriptor", "HPD")  # type: ignore[arg-type]
     with pytest.raises(TypeError):
-        InitializationLetter("INI", b"letter", (KeyFingerprint("A" * 64),))  # type: ignore[arg-type]
+        InitializationLetter("INI", b"letter", (EbicsPublicKeyDigest("A" * 64),))  # type: ignore[arg-type]
 
 
 def test_collection_models_defensively_freeze_caller_lists() -> None:
-    versions = [ProtocolVersion("H005", "3.00")]
+    versions = [ProtocolVersion("H005", "03.00")]
     result = VersionDiscovery(versions)  # type: ignore[arg-type]
-    versions.append(ProtocolVersion("H004", "2.50"))
+    versions.append(ProtocolVersion("H004", "02.50"))
     assert len(result.versions) == 1
 
     orders = [OrderType.HPD]
     capabilities = CapabilityDiscovery(completed_orders=orders)  # type: ignore[arg-type]
     orders.append(OrderType.HAA)
     assert capabilities.completed_orders == (OrderType.HPD,)
+
+
+def test_h005_negotiation_rejects_downgrade_and_conflicts() -> None:
+    discovery = VersionDiscovery(
+        (ProtocolVersion("H004", "02.50"), ProtocolVersion("H005", "03.00"))
+    )
+    assert discovery.select_h005() == NegotiatedProtocol()
+    with pytest.raises(UnsupportedProtocolVersionError):
+        VersionDiscovery((ProtocolVersion("H004", "02.50"),)).select_h005()
+    with pytest.raises(UnsupportedProtocolVersionError):
+        NegotiatedProtocol(protocol_version="H004")
+    with pytest.raises(ConfigurationError):
+        VersionDiscovery(
+            (ProtocolVersion("H005", "03.00"), ProtocolVersion("H005", "03.01"))
+        )

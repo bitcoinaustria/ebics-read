@@ -33,13 +33,16 @@ and German practice. CA-issued French CFONB-profile certificates remain out of
 scope until requested and independently specified. No claim is made that every
 bank accepts the same self-signed profile.
 
+For H005, the EBICS SHA-256 public-key digest printed for initialization and
+out-of-band bank-key comparison is calculated over the complete DER-encoded
+certificate. A generic certificate fingerprint and an EBICS public-key digest
+remain separate semantic types even when their bytes happen to be identical.
+
 ## Legacy-but-normative crypto
 
-The implementation must not “modernize” protocol algorithms. The project
-charter pins the following expected parameters so later work cannot substitute
-newer algorithms for interoperability. They are not yet implementation evidence:
-each detail must be independently checked against the accepted official 3.0.2
-artifact and a recorded vector before code is written:
+The implementation must not “modernize” protocol algorithms. The following
+parameters were checked against the accepted official 3.0.2 artifact on
+2026-07-15. Crypto code still requires recorded vectors before implementation:
 
 - E002 uses RSA PKCS#1 v1.5 transaction-key transport, a 16-byte AES key,
   AES-128-CBC, an all-zero IV/ICV, and the specified ANSI X9.23/ISO 10126-2
@@ -65,10 +68,19 @@ segment transfer, authenticated response validation, decryption,
 decompression/container extraction, return-code validation, and receipt
 completion all succeed. Partial bytes are never returned as a document.
 
+Receipt code `0` is positive and may be sent only after the complete order data
+has been authenticated, decrypted, decompressed, and accepted. Receipt code `1`
+is the negative path after complete transfer when processing fails. A positive
+receipt response performs the bank's post-processing; a negative receipt skips
+it. An unknown receipt outcome is explicit ambiguous state, never assumed to be
+success.
+
 ## Official artifact policy
 
 EBICS SC download terms do not clearly grant downstream MIT-compatible
 sublicensing. Official specifications, XSDs, guides, annexes, and BTF lists are
 therefore not vendored. A developer may supply a separately downloaded
 conformance bundle whose files match reviewed hashes. The bundle path and
-contents must remain untracked.
+contents must remain untracked. The reviewed 3.0.2, Annex 1, TLS/KMS annex, BTF
+code list, H005 schema archive, and Common Implementation Guide hashes are
+recorded in `docs/clean-room-sources.md`.

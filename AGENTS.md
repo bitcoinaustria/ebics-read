@@ -24,8 +24,10 @@ These rules apply to the entire repository.
 ## Security
 
 - Never weaken validation to accommodate a fixture or bank.
-- Bank keys remain unusable until explicitly pinned against out-of-band
-  fingerprints. Rotation requires another explicit comparison.
+- Bank keys remain unusable until their typed EBICS public-key digests are
+  explicitly pinned against values obtained out of band. Rotation requires
+  another explicit comparison. A generic certificate fingerprint is not an
+  EBICS public-key digest.
 - Unknown algorithms and return codes fail closed.
 - Do not log protocol XML, documents, certificates, keys, identifiers, nonces,
   transaction IDs, account data, or credentials.

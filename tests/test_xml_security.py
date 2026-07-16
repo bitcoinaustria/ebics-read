@@ -41,6 +41,31 @@ def test_enforces_input_depth_element_and_text_limits() -> None:
         parse_xml_document(b"<a>12345</a>", XmlLimits(max_text_bytes=4))
 
 
+def test_enforces_utf8_attribute_and_namespace_limits() -> None:
+    with pytest.raises(XmlSecurityError):
+        parse_xml_document(b'<?xml version="1.0" encoding="ISO-8859-1"?><root/>')
+    with pytest.raises(XmlSecurityError):
+        parse_xml_document(b"<root>\xe9</root>")
+    with pytest.raises(ResponseLimitError):
+        parse_xml_document(
+            b'<root a="1" b="2"/>', XmlLimits(max_attributes_per_element=1)
+        )
+    with pytest.raises(ResponseLimitError):
+        parse_xml_document(
+            b'<root attribute="value"/>', XmlLimits(max_total_attribute_bytes=5)
+        )
+    with pytest.raises(ResponseLimitError):
+        parse_xml_document(
+            b'<root xmlns:a="urn:a" xmlns:b="urn:b"/>',
+            XmlLimits(max_namespaces=1),
+        )
+    with pytest.raises(ResponseLimitError):
+        parse_xml_document(
+            b'<root xmlns:a="urn:namespace-too-long"/>',
+            XmlLimits(max_namespace_bytes=5),
+        )
+
+
 def test_rejects_processing_instructions_and_malformed_xml() -> None:
     for payload in (
         b"<?unsafe before?><root/>",

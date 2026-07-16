@@ -15,11 +15,14 @@ implementation code, tests, fixtures, or internal documentation was inspected.
 - URL: https://www.ebics.org/en/technical-information/ebics-specification
 - Retrieved: 2026-07-15
 - Retrieved-page SHA-256: `213bea8914a084386c5bf91ce0432208d2322df82f6ea84345092dea2ec44e0d`
-- Status: normative index and download terms; specification artifact not
-  downloaded because accepting the click-through terms requires explicit user
-  approval
-- Learned: 3.0.2 validity date; BTF and TLS/KMS annex independence; trademark,
-  reproduction, no-derivative, and no-sublicensing constraints
+- Artifact: `2022-06-27-EBICS_V_3.0.2_FinalVersion.pdf`
+- Artifact SHA-256: `f12bd46e3afefef66d64838d221e96ebabd1bf579ef15d3a92e8524d43636b3c`
+- Annex 1 artifact: `2022-06-27-EBICS_V_3.0.2_Annex1_ReturnCodes-Final.pdf`
+- Annex 1 SHA-256: `5f6e4b2f273f4626f4222cef903abffa30e1fd64beb2acd820d4244c9cda008a`
+- Status: normative artifacts downloaded outside the repository after the user
+  personally authorized acceptance of the published terms on 2026-07-15
+- Learned: exact H005 public-key-digest input, H005 version identifiers,
+  receipt semantics, return-code source, and fixed A006/X002/E002 parameters
 - Redistribution: not vendored; terms are not clearly MIT-sublicensable
 
 ### EBICS Schema index — H000/H005/S002
@@ -28,9 +31,13 @@ implementation code, tests, fixtures, or internal documentation was inspected.
 - URL: https://www.ebics.org/en/technical-information/ebics-schema
 - Retrieved: 2026-07-15
 - Retrieved-page SHA-256: `f5053e3c0c44fc399b90bee77b45c91cbd8f43a12b7383c49dab391b8b3bdd16`
-- Status: normative artifact index; XSD archive not downloaded
+- Artifact: `EBICS_3.0_schema_H005FinalVersion07-08-2017.zip`
+- Artifact SHA-256: `e2cec4c8b0a43c325e0e6a84f969834ac47f921cdfa1fd59f9784eb46599863d`
+- Status: normative archive downloaded and inspected outside the repository;
+  no schema file is vendored
 - Learned: official H000 HEV, H005 envelope/order/type/key-management, S002,
-  and W3C XMLDSig schema file set
+  and W3C XMLDSig schema file set; exact namespaces are
+  `http://www.ebics.org/H000` and `urn:org:ebics:H005`
 - Redistribution: not vendored for the same no-sublicensing ambiguity
 
 ### Common EBICS Implementation Guide index — version 03
@@ -39,10 +46,12 @@ implementation code, tests, fixtures, or internal documentation was inspected.
 - URL: https://www.ebics.org/en/technical-information/implementation-guide
 - Retrieved: 2026-07-15
 - Retrieved-page SHA-256: `548c5f39d8e99fccb7cfd22f5e9c81d95036a8705b9963c4c4f2aa4ba4f5c797`
-- Status: official informative/interoperability guide index; artifact not
-  downloaded
-- Learned: common guide applies across EBICS countries and version 03 includes
-  implementation experience
+- Artifact: `2022-06-27-EBICS_Common_IG_based_EBICS_3.0-ExtVersion03-FinalVersion.pdf`
+- Artifact SHA-256: `c8715987e78329bf2babf128d74ae7b8dea5559cee84b4a5d21212c19dd8e43f`
+- Status: official informative/interoperability guide downloaded outside the
+  repository after acceptance of the published terms
+- Learned: self-signed bank certificate profile details, RSA key-size bounds,
+  role-specific key usage, validity checks, and interoperability guidance
 - Redistribution: not vendored
 
 ### EBICS BTF mapping hub
@@ -56,6 +65,32 @@ implementation code, tests, fixtures, or internal documentation was inspected.
   France, and Switzerland; BTF policy must not be hard-coded in core
 - Redistribution: linked mapping artifacts are not vendored pending individual
   rights review
+
+### EBICS BTF external code list
+
+- Publisher: EBICS SC / SIZ GmbH
+- Source URL: https://www.ebics.org/en/technical-information/ebics-specification
+- Retrieved: 2026-07-15
+- Artifact: `2024-10-23-EBICS_Annex_BTF-ExternalCodeList.7z`
+- Artifact SHA-256: `33e4fe2cb75f2c6182d9e8c46c9b8252b37f8f91d46cde8e1a64845292d4dee9`
+- Status: official annex downloaded outside the repository after acceptance of
+  the published terms
+- Learned: descriptor values are external policy/code-list data and must remain
+  caller supplied or independently mapped rather than hard-coded in core
+- Redistribution: not vendored
+
+### EBICS TLS and key-management security annex
+
+- Publisher: EBICS SC / SIZ GmbH
+- Source URL: https://www.ebics.org/en/technical-information/ebics-specification
+- Retrieved: 2026-07-15
+- Artifact: `2026-03-20-EBICS_Annex_TLS_and_KMS-final.pdf`
+- Artifact SHA-256: `d8537a567a87500db476865929dfc086b0a47662462a91869fedaf0ed58b7cb3`
+- Status: normative security annex downloaded outside the repository after
+  acceptance of the published terms
+- Learned: current TLS and protected-key-operation/storage recommendations;
+  these do not weaken the TLS 1.2 minimum or caller-controlled key boundary
+- Redistribution: not vendored
 
 ### EBICS Technical News — TLS and KMS update
 
@@ -83,14 +118,15 @@ implementation code, tests, fixtures, or internal documentation was inspected.
   3.0.1/3.0.2 had no schema change
 - Redistribution: change-request archive not vendored
 
-## Normative artifact gate
+## Normative artifact status
 
-Before protocol envelope or crypto implementation, a developer must separately
-accept the official terms, download the 3.0.2 specification, H000/H005/S002
-schemas, current TLS/KMS annex, implementation guide, and BTF list outside the
-repository, then record exact titles, versions, filenames, retrieval date, and
-SHA-256 values here. The project must not automate acceptance on the user's
-behalf.
+The foundation gate was satisfied on 2026-07-15: the user personally authorized
+acceptance of the published download terms; the artifacts above were downloaded
+to an untracked temporary directory, hashed, and reviewed there. They are not
+committed, redistributed, or covered by this repository's MIT license. Future
+contributors must independently obtain matching artifacts under the publisher's
+terms. National AT/DE/FR/CH mapping artifacts still require individual rights
+review before use or redistribution.
 
 ## Known implementations excluded as protocol sources
 
