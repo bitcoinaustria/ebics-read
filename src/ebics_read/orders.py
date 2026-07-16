@@ -4,7 +4,7 @@ from enum import Enum
 
 
 class OrderType(str, Enum):
-    """Only operations that may exist in EBICSMIT."""
+    """Only operations that may exist in EBICS Read."""
 
     HEV = "HEV"
     INI = "INI"

@@ -1,21 +1,21 @@
-"""Typed, data-minimizing EBICSMIT exception hierarchy."""
+"""Typed, data-minimizing EBICS Read exception hierarchy."""
 
 from enum import Enum
 
 
-class EbicsmitError(Exception):
-    """Base exception for the EBICSMIT library."""
+class EbicsReadError(Exception):
+    """Base exception for the EBICS Read library."""
 
 
-class ConfigurationError(EbicsmitError, ValueError):
+class ConfigurationError(EbicsReadError, ValueError):
     """Raised for invalid immutable configuration or typed request values."""
 
 
-class OperationNotImplementedError(EbicsmitError, NotImplementedError):
+class OperationNotImplementedError(EbicsReadError, NotImplementedError):
     """Raised for an allowlisted operation not implemented by the backend yet."""
 
 
-class ProtocolError(EbicsmitError):
+class ProtocolError(EbicsReadError):
     """Raised when an EBICS peer violates the expected protocol."""
 
 
@@ -63,15 +63,15 @@ class SessionConflictError(ProtocolError):
     """Raised when a session lease or compare-and-swap precondition fails."""
 
 
-class OperationDeadlineError(EbicsmitError):
+class OperationDeadlineError(EbicsReadError):
     """Raised before accepting work that cannot finish within the deadline."""
 
 
-class OperationCancelledError(EbicsmitError):
+class OperationCancelledError(EbicsReadError):
     """Raised by the default operation control after explicit cancellation."""
 
 
-class TransportError(EbicsmitError):
+class TransportError(EbicsReadError):
     """Raised for TLS, redirect, timeout, or HTTP transport failure."""
 
 

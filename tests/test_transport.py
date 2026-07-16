@@ -10,7 +10,7 @@ from urllib.error import URLError
 
 import pytest
 
-from ebicsmit import (
+from ebics_read import (
     AmbiguousTransportError,
     HttpsTransport,
     OperationDeadlineError,
@@ -19,9 +19,9 @@ from ebicsmit import (
     ResponseLimitError,
     TransportError,
 )
-from ebicsmit.models import Bank
-from ebicsmit.testing import FixedClock
-from ebicsmit.transport import _PreparedTransportRequest, _RejectRedirects
+from ebics_read.models import Bank
+from ebics_read.testing import FixedClock
+from ebics_read.transport import _PreparedTransportRequest, _RejectRedirects
 
 
 class FakeResponse:
@@ -114,7 +114,7 @@ def test_default_transport_treats_interruption_as_ambiguous(
             raise URLError(TimeoutError("synthetic timeout"))
 
     monkeypatch.setattr(
-        "ebicsmit.transport.build_opener", lambda *handlers: BrokenOpener()
+        "ebics_read.transport.build_opener", lambda *handlers: BrokenOpener()
     )
     request = _PreparedTransportRequest._for_hev(
         Bank("https://bank.invalid/ebics", "HOST")
@@ -165,7 +165,7 @@ def test_operation_control_bounds_each_exchange(
             return OpenedResponse(b"response")
 
     monkeypatch.setattr(
-        "ebicsmit.transport.build_opener", lambda *handlers: RecordingOpener()
+        "ebics_read.transport.build_opener", lambda *handlers: RecordingOpener()
     )
     short = OperationControlStub(deadline=NOW + timedelta(seconds=5))
     result = HttpsTransport(clock=CLOCK, timeout_seconds=30).exchange(request, short)

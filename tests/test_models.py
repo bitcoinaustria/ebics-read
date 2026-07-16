@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from ebicsmit import (
+from ebics_read import (
     AccountSelector,
     Bank,
     BtfDescriptor,

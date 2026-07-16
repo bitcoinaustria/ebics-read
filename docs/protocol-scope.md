@@ -52,7 +52,7 @@ parameters were checked against the accepted official 3.0.2 artifact on
   not acceptable.
 - X002 uses Canonical XML 1.0, RSA/SHA-256 PKCS#1 v1.5, SHA-256 digests, and the
   exact authenticated-node XPointer semantics. A general XMLDSig verifier may
-  not choose references on EBICSMIT's behalf.
+  not choose references on EBICS Read's behalf.
 
 Unknown algorithm identifiers fail closed.
 

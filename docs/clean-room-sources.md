@@ -42,7 +42,7 @@ implementation code, tests, fixtures, or internal documentation was inspected.
   `http://www.ebics.org/H000` and `urn:org:ebics:H005`; the H000 schema makes
   `xsi:schemaLocation` an optional instance hint rather than constraining it to
   a particular local filename
-- Verification: the unmodified external `ebics_hev.xsd` validated EBICSMIT's
+- Verification: the unmodified external `ebics_hev.xsd` validated EBICS Read's
   generated request and synthetic response on 2026-07-15; the opt-in test does
   not redistribute or resolve the schema over the network and rejects any leaf
   file that does not match the recorded archive-member digest

@@ -2,14 +2,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from ebicsmit import (
+from ebics_read import (
     ConfigurationError,
     DeadlineControl,
     OperationCancelledError,
     SecureNonceSource,
     SystemClock,
 )
-from ebicsmit.testing import FixedClock
+from ebics_read.testing import FixedClock
 
 
 def test_system_clock_and_secure_nonce_source_are_safe_defaults() -> None:

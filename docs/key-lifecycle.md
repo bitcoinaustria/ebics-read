@@ -47,7 +47,7 @@ Python cannot determine whether a host copied a candidate digest into
 `from_out_of_band()`. A host must obtain and collect the expected values through
 a separate interaction, must not prefill them from HPB, should show candidate
 and independently entered values side by side, and should record confirmation
-method and time in its own protected storage. EBICSMIT performs the typed,
+method and time in its own protected storage. EBICS Read performs the typed,
 constant-time comparison but deliberately owns no UI or persistence policy.
 
 There is no trust-on-first-use mode. A newly downloaded or rotated certificate
@@ -68,5 +68,5 @@ separate future profile rather than a validation bypass.
 
 Python `bytes` objects may be copied and cannot be reliably zeroized. Provider
 implementations requiring stronger guarantees must keep private material and
-operations outside the Python process. EBICSMIT never logs or intentionally
+operations outside the Python process. EBICS Read never logs or intentionally
 persists keys or certificates.

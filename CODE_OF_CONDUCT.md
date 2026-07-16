@@ -2,7 +2,7 @@
 
 ## Our pledge
 
-We pledge to make participation in EBICSMIT free from harassment for everyone,
+We pledge to make participation in EBICS Read free from harassment for everyone,
 regardless of age, body size, disability, ethnicity, sex characteristics,
 gender identity and expression, experience, education, socioeconomic status,
 nationality, appearance, race, caste, color, religion, sexual identity and

@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from lxml import etree
 
-from ebicsmit import Bank
-from ebicsmit.transport import _PreparedTransportRequest
+from ebics_read import Bank
+from ebics_read.transport import _PreparedTransportRequest
 
 _H000 = "http://www.ebics.org/H000"
 _OFFICIAL_H000_SHA256 = (
@@ -24,12 +24,12 @@ def _reviewed_schema_bytes(path: Path) -> bytes:
 
 
 def _official_schema() -> etree.XMLSchema:
-    configured = os.environ.get("EBICSMIT_H000_XSD")
+    configured = os.environ.get("EBICS_READ_H000_XSD")
     if configured is None:
-        pytest.skip("set EBICSMIT_H000_XSD to a separately downloaded official XSD")
+        pytest.skip("set EBICS_READ_H000_XSD to a separately downloaded official XSD")
     path = Path(configured)
     if not path.is_file():
-        pytest.fail("EBICSMIT_H000_XSD does not identify a file")
+        pytest.fail("EBICS_READ_H000_XSD does not identify a file")
     try:
         schema_bytes = _reviewed_schema_bytes(path)
     except ValueError as exc:

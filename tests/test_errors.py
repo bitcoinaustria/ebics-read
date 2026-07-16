@@ -1,4 +1,4 @@
-from ebicsmit import (
+from ebics_read import (
     AmbiguousTransportError,
     CertificateValidationError,
     ProtocolError,

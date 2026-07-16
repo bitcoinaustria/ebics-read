@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Private vulnerability report
-    url: https://github.com/bitcoinaustria/ebicsmit/security/advisories/new
+    url: https://github.com/bitcoinaustria/ebics-read/security/advisories/new
     about: Report security issues privately; never include bank credentials or real data.

@@ -1,6 +1,6 @@
 import pytest
 
-from ebicsmit import EbicsBackend, OperationNotImplementedError
+from ebics_read import EbicsBackend, OperationNotImplementedError
 
 
 class _UnusedTransport:

@@ -1,8 +1,8 @@
 import pytest
 from lxml import etree
 
-from ebicsmit import ResponseLimitError, XmlSecurityError
-from ebicsmit.xml import XmlLimits, parse_xml_document
+from ebics_read import ResponseLimitError, XmlSecurityError
+from ebics_read.xml import XmlLimits, parse_xml_document
 
 
 def test_rejects_dtd_and_entity_declarations() -> None:

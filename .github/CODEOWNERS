@@ -1,12 +1,12 @@
 # Protocol and security boundaries require an explicit maintainer review.
-/src/ebicsmit/certificates.py @tobomobo
-/src/ebicsmit/client.py @tobomobo
-/src/ebicsmit/hev.py @tobomobo
-/src/ebicsmit/interfaces.py @tobomobo
-/src/ebicsmit/models.py @tobomobo
-/src/ebicsmit/orders.py @tobomobo
-/src/ebicsmit/transport.py @tobomobo
-/src/ebicsmit/xml.py @tobomobo
+/src/ebics_read/certificates.py @tobomobo
+/src/ebics_read/client.py @tobomobo
+/src/ebics_read/hev.py @tobomobo
+/src/ebics_read/interfaces.py @tobomobo
+/src/ebics_read/models.py @tobomobo
+/src/ebics_read/orders.py @tobomobo
+/src/ebics_read/transport.py @tobomobo
+/src/ebics_read/xml.py @tobomobo
 /tests/ @tobomobo
 /docs/clean-room-sources.md @tobomobo
 /docs/protocol-scope.md @tobomobo
