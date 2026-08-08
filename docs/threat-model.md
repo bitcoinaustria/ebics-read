@@ -62,6 +62,12 @@ match the bank's out-of-band values.
   rejects mixed content, conflicting or duplicate advertisements, and never
   falls back to H004. Every subsequent backend call receives that exact
   negotiated protocol value.
+- Common H005 parsing distinguishes the fixed standard and key-management
+  response roots, accepts only H005 with its schema-optional revision omitted or
+  set to 1, requires authenticated markers, preserves
+  the tree for later X002 verification, and rejects return codes outside the
+  contextual technical/business Annex 1 allowlists. Parsed fields remain
+  explicitly unauthenticated until X002 verification is complete.
 - Strict DER X.509 profile validation checks RSA algorithm/strength, validity,
   self-signature, SPKI OID, serial/validity bounds, authority-key identity,
   required and forbidden extensions/key usage, and cross-role key reuse before
@@ -97,7 +103,7 @@ match the bank's out-of-band values.
   response metadata or order data.
 - Select exactly the authenticated nodes required by the normative XPointer;
   reject wrapping, namespace substitution, missing nodes, and duplicates.
-- Reject unknown algorithms and return codes.
+- Reject unknown algorithms.
 - Generate a fresh 128-bit nonce and timestamp for every signed initial request;
   treat `EBICS_TX_MESSAGE_REPLAY` as a security failure rather than silently
   retrying it.

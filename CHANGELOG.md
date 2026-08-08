@@ -26,5 +26,6 @@ All notable changes will be recorded here. The project has made no release.
 - Exact typed 128-bit transaction IDs and a persistent atomic replay-claim seam.
 - Typed HPD parameters and BTD-only HKD/HTD account and subscriber permissions.
 - Request-bound resumable BTD state and deferred, idempotent document publication.
+- Strict common H005 response envelopes and contextual Annex 1 return-code parsing.
 - Architecture, threat-model, protocol-scope, key-lifecycle, interoperability,
   and clean-room source documentation.
