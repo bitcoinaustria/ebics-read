@@ -116,7 +116,7 @@ class SessionStore(Protocol):
 
 
 class SegmentStore(Protocol):
-    """Caller-controlled encrypted or equivalently protected ciphertext spool."""
+    """Caller-controlled confidentiality- and integrity-protected BTD spool."""
 
     def put_segment(
         self,
@@ -124,7 +124,7 @@ class SegmentStore(Protocol):
         segment_number: int,
         chunks: Iterable[bytes],
     ) -> SegmentReference:
-        """Atomically store one bounded ciphertext segment from streamed chunks."""
+        """Atomically store one bounded BTD response from streamed chunks."""
 
     def iter_segment(
         self, lease: SessionLease, reference: SegmentReference
@@ -137,7 +137,7 @@ class SegmentStore(Protocol):
         """Recover the ordered number/reference index after process restart."""
 
     def discard(self, lease: SessionLease) -> None:
-        """Remove every partial segment for a terminal transaction."""
+        """Idempotently remove every partial segment for a terminal transaction."""
 
 
 class DocumentWriter(Protocol):

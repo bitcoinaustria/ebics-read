@@ -204,7 +204,7 @@ class InMemorySessionStore:
 
 @dataclass(slots=True)
 class InMemorySegmentStore:
-    """Test-only recoverable ciphertext spool; never production protection."""
+    """Test-only response spool; it provides no production confidentiality."""
 
     _segments: dict[str, dict[int, tuple[SegmentReference, bytes]]] = field(
         default_factory=dict, init=False, repr=False

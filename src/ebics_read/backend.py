@@ -6,6 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TypeVar
 
+from .btd import (
+    _download_request_identity,
+    _parse_btd_initial_response,
+    _parse_btd_transfer_response,
+)
 from .certificates import (
     SelfSignedH005BankCertificateProfile,
     _validate_subscriber_authentication_encryption_certificates,
@@ -19,6 +24,8 @@ from .errors import (
     OperationNotImplementedError,
     ProtocolError,
     ResponseLimitError,
+    SecurityError,
+    SessionConflictError,
     TransientTransportError,
     TransportError,
 )
@@ -62,6 +69,7 @@ from .interfaces import (
     KeyPurpose,
     NonceSource,
     OperationControl,
+    SegmentStore,
     SessionStore,
 )
 from .models import (
@@ -70,10 +78,14 @@ from .models import (
     CapabilityDiscovery,
     DownloadedDocument,
     DownloadOptions,
+    DownloadPhase,
+    DownloadSession,
     InitializationLetter,
     NegotiatedProtocol,
     ProtocolLimits,
     ReceiptKind,
+    SegmentReference,
+    SessionLease,
     Subscriber,
     TransactionId,
     TrustedBankKeys,
@@ -85,6 +97,54 @@ from .transport import EbicsTransport, _PreparedTransportRequest
 from .xml import XmlLimits
 
 _DiscoveryPayload = TypeVar("_DiscoveryPayload")
+
+
+def _btd_spool_index(
+    state: DownloadSession,
+    entries: tuple[tuple[int, SegmentReference], ...],
+) -> dict[int, SegmentReference]:
+    numbers = tuple(number for number, _ in entries)
+    references = tuple(reference for _, reference in entries)
+    if (
+        any(type(number) is not int or number <= 0 for number in numbers)
+        or numbers != tuple(sorted(numbers))
+        or len(numbers) != len(set(numbers))
+        or len(references) != len(set(references))
+    ):
+        raise SecurityError("BTD spool integrity check failed")
+    if state.phase is DownloadPhase.NEW:
+        allowed = {(), (1,)}
+    elif state.phase in {
+        DownloadPhase.INITIALIZED,
+        DownloadPhase.RECEIVING_SEGMENTS,
+    }:
+        prefix = tuple(range(1, state.next_segment))
+        allowed = {prefix, (*prefix, state.next_segment)}
+        if state.phase is DownloadPhase.INITIALIZED:
+            allowed = {(1,)}
+    elif state.phase in {
+        DownloadPhase.SEGMENTS_RECEIVED,
+        DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED,
+    }:
+        if state.total_segments is None:
+            raise SessionConflictError("BTD session lacks a segment count")
+        allowed = {tuple(range(1, state.total_segments + 1))}
+    else:
+        raise SessionConflictError("BTD receive phase cannot be resumed")
+    if numbers not in allowed:
+        raise SecurityError("BTD spool does not match durable session state")
+    return dict(entries)
+
+
+def _validate_btd_first_fragment(
+    initialization: _HaaInitialResponse, protocol_limits: ProtocolLimits
+) -> None:
+    value = _validate_order_data_fragment(
+        initialization.first_fragment,
+        last=initialization.total_segments == 1,
+    )
+    if len(value) > _encoded_order_data_limit(protocol_limits):
+        raise ResponseLimitError("BTD encoded order data exceeds the configured limit")
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +161,7 @@ class EbicsBackend:
     )
     session_store: SessionStore | None = field(default=None, repr=False)
     protocol_limits: ProtocolLimits = field(default_factory=ProtocolLimits, repr=False)
+    segment_store: SegmentStore | None = field(default=None, repr=False)
 
     def probe_versions(self, bank: Bank, control: OperationControl) -> VersionDiscovery:
         request = _PreparedTransportRequest._for_hev(bank)
@@ -770,6 +831,373 @@ class EbicsBackend:
         request = receipt_request(transaction_id, receipt)
         response = self.transport.exchange(request, control)
         parse_receipt(response.body, transaction_id, receipt)
+
+    def _receive_btd_segments(
+        self,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+        trusted_bank_keys: TrustedBankKeys,
+        session_id: str,
+        descriptor: BtfDescriptor,
+        options: DownloadOptions,
+        control: OperationControl,
+    ) -> DownloadSession:
+        """Receive and durably verify all BTD response segments without plaintext."""
+
+        if (
+            self.key_provider is None
+            or self.clock is None
+            or self.nonce_source is None
+            or self.session_store is None
+            or self.segment_store is None
+        ):
+            raise ConfigurationError(
+                "BTD requires key, clock, nonce, session, and segment providers"
+            )
+        if options.account is not None:
+            raise ConfigurationError(
+                "H005 defines no portable BTD account-selector parameter"
+            )
+        key_provider = self.key_provider
+        session_store = self.session_store
+        segment_store = self.segment_store
+        authentication_der = key_provider.certificate_der(KeyPurpose.AUTHENTICATION)
+        encryption_der = key_provider.certificate_der(KeyPurpose.ENCRYPTION)
+        requested_at = self.clock.now()
+        _validate_subscriber_transport_certificates(
+            authentication_der, encryption_der, requested_at
+        )
+        request_identity = _download_request_identity(
+            bank,
+            subscriber,
+            protocol,
+            trusted_bank_keys,
+            descriptor,
+            options,
+            self.protocol_limits,
+            self.xml_limits,
+            authentication_der,
+            encryption_der,
+        )
+        owner_token = self.nonce_source.random_bytes(32)
+        if type(owner_token) is not bytes or len(owner_token) != 32:
+            raise ConfigurationError("BTD lease nonce source must return 32 bytes")
+        control.raise_if_cancelled()
+        lease = session_store.acquire_lease(session_id, owner_token, control.deadline)
+        state: DownloadSession | None = None
+        try:
+            state = session_store.load(lease)
+            if state is not None and state.phase is DownloadPhase.FAILED:
+                segment_store.discard(lease)
+                raise SessionConflictError("BTD receive phase cannot be resumed")
+            entries = segment_store.list_segments(lease)
+            if state is None:
+                if entries:
+                    raise SessionConflictError("BTD spool exists without session state")
+                state = DownloadSession.start(
+                    session_id, request_identity, self.protocol_limits
+                )
+                if not session_store.compare_and_swap(lease, None, state):
+                    raise SessionConflictError("BTD session initialization raced")
+            elif state.request_identity != request_identity:
+                raise SessionConflictError("BTD session belongs to another request")
+            index = _btd_spool_index(state, entries)
+            if state.phase is DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED:
+                self._verify_btd_spool(
+                    state,
+                    index,
+                    lease,
+                    trusted_bank_keys,
+                    encryption_der,
+                    key_provider,
+                    segment_store,
+                )
+                return state
+
+            if state.phase is DownloadPhase.NEW:
+                initialization = None
+                bootstrap_body: bytes | None = None
+                if 1 in index:
+                    initialization = _parse_btd_initial_response(
+                        self._read_btd_response(segment_store, lease, index[1]),
+                        trusted_bank_keys,
+                        encryption_der,
+                        key_provider,
+                        self.xml_limits,
+                        self.protocol_limits,
+                    )
+                else:
+                    nonce = self.nonce_source.random_bytes(16)
+                    if type(nonce) is not bytes or len(nonce) != 16:
+                        raise ConfigurationError(
+                            "BTD nonce source must return exactly 16 bytes"
+                        )
+                    request = _PreparedTransportRequest._for_btd_initialization(
+                        bank,
+                        subscriber,
+                        protocol,
+                        trusted_bank_keys,
+                        descriptor,
+                        options,
+                        nonce,
+                        requested_at,
+                        key_provider,
+                        authentication_der,
+                    )
+                    try:
+                        response = self.transport.exchange(request, control)
+                    except TransientTransportError:
+                        raise
+                    except TransportError as exc:
+                        failed = state.fail()
+                        if not session_store.compare_and_swap(
+                            lease, state.revision, failed
+                        ):
+                            raise SessionConflictError(
+                                "BTD failure transition raced"
+                            ) from exc
+                        state = failed
+                        segment_store.discard(lease)
+                        raise
+                    initialization = _parse_btd_initial_response(
+                        response.body,
+                        trusted_bank_keys,
+                        encryption_der,
+                        key_provider,
+                        self.xml_limits,
+                        self.protocol_limits,
+                    )
+                    bootstrap_body = response.body
+                _validate_btd_first_fragment(initialization, self.protocol_limits)
+                if bootstrap_body is not None:
+                    segment_store.put_segment(lease, 1, (bootstrap_body,))
+                initialized = state.initialize(
+                    transaction_id=initialization.transaction_id,
+                    total_segments=initialization.total_segments,
+                )
+                if not session_store.initialize_transaction(
+                    lease, state.revision, initialized
+                ):
+                    raise SessionConflictError("BTD transaction initialization raced")
+                state = initialized
+                recorded = state.record_segment(1)
+                if not session_store.compare_and_swap(lease, state.revision, recorded):
+                    raise SessionConflictError("BTD first-segment transition raced")
+                state = recorded
+
+            index = _btd_spool_index(state, segment_store.list_segments(lease))
+            if state.phase is DownloadPhase.INITIALIZED:
+                initialization = _parse_btd_initial_response(
+                    self._read_btd_response(segment_store, lease, index[1]),
+                    trusted_bank_keys,
+                    encryption_der,
+                    key_provider,
+                    self.xml_limits,
+                    self.protocol_limits,
+                )
+                if (
+                    initialization.transaction_id != state.transaction_id
+                    or initialization.total_segments != state.total_segments
+                ):
+                    raise SecurityError(
+                        "BTD bootstrap and session metadata disagree"
+                    )
+                _validate_btd_first_fragment(initialization, self.protocol_limits)
+                recorded = state.record_segment(1)
+                if not session_store.compare_and_swap(
+                    lease, state.revision, recorded
+                ):
+                    raise SessionConflictError("BTD first-segment recovery raced")
+                state = recorded
+                index = _btd_spool_index(
+                    state, segment_store.list_segments(lease)
+                )
+            if (
+                state.phase is DownloadPhase.RECEIVING_SEGMENTS
+                and state.next_segment in index
+            ):
+                self._validate_btd_transfer_spool_entry(
+                    state,
+                    state.next_segment,
+                    index[state.next_segment],
+                    lease,
+                    trusted_bank_keys,
+                    segment_store,
+                )
+                recorded = state.record_segment(state.next_segment)
+                if not session_store.compare_and_swap(lease, state.revision, recorded):
+                    raise SessionConflictError("BTD segment recovery raced")
+                state = recorded
+
+            while state.phase in {
+                DownloadPhase.INITIALIZED,
+                DownloadPhase.RECEIVING_SEGMENTS,
+            }:
+                if state.transaction_id is None or state.total_segments is None:
+                    raise SessionConflictError("BTD session lost transaction metadata")
+                transaction_id = state.transaction_id
+                total_segments = state.total_segments
+                segment_number = state.next_segment
+                request = _PreparedTransportRequest._for_btd_transfer(
+                    bank,
+                    protocol,
+                    transaction_id,
+                    segment_number,
+                    key_provider,
+                    authentication_der,
+                )
+                try:
+                    response = self.transport.exchange(request, control)
+                except TransientTransportError:
+                    raise
+                except TransportError as exc:
+                    failed = state.fail()
+                    if not session_store.compare_and_swap(
+                        lease, state.revision, failed
+                    ):
+                        raise SessionConflictError(
+                            "BTD failure transition raced"
+                        ) from exc
+                    state = failed
+                    segment_store.discard(lease)
+                    raise
+                fragment = _parse_btd_transfer_response(
+                    response.body,
+                    trusted_bank_keys,
+                    transaction_id,
+                    segment_number,
+                    total_segments,
+                    self.xml_limits,
+                )
+                _validate_order_data_fragment(
+                    fragment, last=segment_number == total_segments
+                )
+                segment_store.put_segment(lease, segment_number, (response.body,))
+                recorded = state.record_segment(segment_number)
+                if not session_store.compare_and_swap(lease, state.revision, recorded):
+                    raise SessionConflictError("BTD segment transition raced")
+                state = recorded
+
+            index = _btd_spool_index(state, segment_store.list_segments(lease))
+            self._verify_btd_spool(
+                state,
+                index,
+                lease,
+                trusted_bank_keys,
+                encryption_der,
+                key_provider,
+                segment_store,
+            )
+            verified = state.mark_signatures_and_digests_verified()
+            if not session_store.compare_and_swap(lease, state.revision, verified):
+                raise SessionConflictError("BTD verification transition raced")
+            return verified
+        except SessionConflictError:
+            raise
+        except ProtocolError as exc:
+            if state is not None and state.phase is not DownloadPhase.FAILED:
+                failed = state.fail()
+                if not session_store.compare_and_swap(lease, state.revision, failed):
+                    raise SessionConflictError(
+                        "BTD terminal failure transition raced"
+                    ) from exc
+                segment_store.discard(lease)
+            raise
+        finally:
+            session_store.release_lease(lease)
+
+    def _verify_btd_spool(
+        self,
+        state: DownloadSession,
+        index: dict[int, SegmentReference],
+        lease: SessionLease,
+        trusted_bank_keys: TrustedBankKeys,
+        encryption_der: bytes,
+        key_provider: KeyProvider,
+        segment_store: SegmentStore,
+    ) -> None:
+        if state.transaction_id is None or state.total_segments is None:
+            raise SessionConflictError("BTD session lost transaction metadata")
+        initialization = _parse_btd_initial_response(
+            self._read_btd_response(segment_store, lease, index[1]),
+            trusted_bank_keys,
+            encryption_der,
+            key_provider,
+            self.xml_limits,
+            self.protocol_limits,
+        )
+        if (
+            initialization.transaction_id != state.transaction_id
+            or initialization.total_segments != state.total_segments
+        ):
+            raise SecurityError("BTD bootstrap and session metadata disagree")
+        _validate_btd_first_fragment(initialization, self.protocol_limits)
+        encoded_size = len(
+            _validate_order_data_fragment(
+                initialization.first_fragment, last=state.total_segments == 1
+            )
+        )
+        for segment_number in range(2, state.total_segments + 1):
+            fragment = _parse_btd_transfer_response(
+                self._read_btd_response(segment_store, lease, index[segment_number]),
+                trusted_bank_keys,
+                state.transaction_id,
+                segment_number,
+                state.total_segments,
+                self.xml_limits,
+            )
+            encoded_size += len(
+                _validate_order_data_fragment(
+                    fragment, last=segment_number == state.total_segments
+                )
+            )
+            if encoded_size > _encoded_order_data_limit(self.protocol_limits):
+                raise ResponseLimitError(
+                    "BTD encoded order data exceeds the configured limit"
+                )
+
+    def _validate_btd_transfer_spool_entry(
+        self,
+        state: DownloadSession,
+        segment_number: int,
+        reference: SegmentReference,
+        lease: SessionLease,
+        trusted_bank_keys: TrustedBankKeys,
+        segment_store: SegmentStore,
+    ) -> None:
+        if state.transaction_id is None or state.total_segments is None:
+            raise SessionConflictError("BTD session lost transaction metadata")
+        fragment = _parse_btd_transfer_response(
+            self._read_btd_response(segment_store, lease, reference),
+            trusted_bank_keys,
+            state.transaction_id,
+            segment_number,
+            state.total_segments,
+            self.xml_limits,
+        )
+        _validate_order_data_fragment(
+            fragment, last=segment_number == state.total_segments
+        )
+
+    def _read_btd_response(
+        self,
+        segment_store: SegmentStore,
+        lease: SessionLease,
+        reference: SegmentReference,
+    ) -> bytes:
+        chunks: list[bytes] = []
+        size = 0
+        for chunk in segment_store.iter_segment(lease, reference):
+            if type(chunk) is not bytes:
+                raise SecurityError("BTD spool yielded a non-byte chunk")
+            size += len(chunk)
+            if size > self.xml_limits.max_input_bytes:
+                raise ResponseLimitError("BTD spooled response exceeds the XML limit")
+            chunks.append(chunk)
+        if not chunks:
+            raise SecurityError("BTD spool response is empty")
+        return b"".join(chunks)
 
     def download(
         self,

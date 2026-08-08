@@ -590,7 +590,7 @@ class DownloadSession:
         return self._advance(phase, next_segment=next_segment)
 
     def mark_signatures_and_digests_verified(self) -> DownloadSession:
-        """Record authentication of every response and order-data digest."""
+        """Record X002 response and recipient-key-digest verification."""
 
         self._require_phase(DownloadPhase.SEGMENTS_RECEIVED)
         return self._advance(DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED)
@@ -1709,7 +1709,7 @@ class SessionLease:
 
 @dataclass(frozen=True, slots=True)
 class SegmentReference:
-    """Opaque reference to sensitive partial ciphertext in caller-controlled storage."""
+    """Opaque reference to one sensitive protected BTD response."""
 
     value: str = field(repr=False)
 

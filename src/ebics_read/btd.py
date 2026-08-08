@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from hashlib import sha256
 
 from lxml import etree
 
@@ -26,6 +28,7 @@ from .models import (
     BtfDescriptor,
     ContainerType,
     DownloadOptions,
+    DownloadRequestIdentity,
     NegotiatedProtocol,
     ProtocolLimits,
     ReceiptKind,
@@ -34,6 +37,77 @@ from .models import (
     TrustedBankKeys,
 )
 from .xml import XmlLimits
+
+
+def _download_request_identity(
+    bank: Bank,
+    subscriber: Subscriber,
+    protocol: NegotiatedProtocol,
+    trusted_bank_keys: TrustedBankKeys,
+    descriptor: BtfDescriptor,
+    options: DownloadOptions,
+    protocol_limits: ProtocolLimits,
+    xml_limits: XmlLimits,
+    authentication_certificate_der: bytes,
+    encryption_certificate_der: bytes,
+) -> DownloadRequestIdentity:
+    """Bind resumable state to every security-meaningful BTD input."""
+
+    date_range = options.date_range
+    values = (
+        bank.endpoint,
+        bank.host_id,
+        subscriber.partner_id,
+        subscriber.user_id,
+        subscriber.system_id,
+        protocol.protocol_version,
+        protocol.version_number,
+        protocol.request_namespace,
+        protocol.hev_namespace,
+        trusted_bank_keys.authentication.ebics_public_key_digest.sha256_hex,
+        trusted_bank_keys.encryption.ebics_public_key_digest.sha256_hex,
+        sha256(authentication_certificate_der).hexdigest().upper(),
+        sha256(encryption_certificate_der).hexdigest().upper(),
+        descriptor.service_name,
+        descriptor.scope,
+        descriptor.service_option,
+        descriptor.container_type.value,
+        descriptor.message_name,
+        descriptor.message_version,
+        descriptor.variant,
+        descriptor.format,
+        None if date_range is None else date_range.start.isoformat(),
+        None if date_range is None else date_range.end.isoformat(),
+        None
+        if options.account is None
+        else (
+            options.account.iban,
+            options.account.account_id,
+            options.account.currency,
+        ),
+        protocol_limits.max_segments,
+        protocol_limits.max_compressed_bytes,
+        protocol_limits.max_decompressed_bytes,
+        protocol_limits.max_zip_members,
+        protocol_limits.max_zip_member_bytes,
+        protocol_limits.max_compression_ratio,
+        xml_limits.max_input_bytes,
+        xml_limits.max_depth,
+        xml_limits.max_elements,
+        xml_limits.max_text_bytes,
+        xml_limits.max_total_text_bytes,
+        xml_limits.max_attributes_per_element,
+        xml_limits.max_total_attribute_bytes,
+        xml_limits.max_namespaces,
+        xml_limits.max_namespace_bytes,
+        xml_limits.max_total_namespace_bytes,
+    )
+    encoded = json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode(
+        "ascii"
+    )
+    return DownloadRequestIdentity(
+        sha256(b"ebics-read:btd-request:v1\0" + encoded).hexdigest().upper()
+    )
 
 
 def _build_btd_initialization_request_xml(
