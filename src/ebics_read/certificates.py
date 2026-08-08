@@ -45,11 +45,8 @@ def _validate_subscriber_authentication_encryption_certificates(
     signature = _validate_self_signed_subscriber_certificate(
         signature_certificate_der, now, KeyPurpose.SIGNATURE
     )
-    authentication = _validate_self_signed_subscriber_certificate(
-        authentication_certificate_der, now, KeyPurpose.AUTHENTICATION
-    )
-    encryption = _validate_self_signed_subscriber_certificate(
-        encryption_certificate_der, now, KeyPurpose.ENCRYPTION
+    authentication, encryption = _validate_subscriber_transport_certificates(
+        authentication_certificate_der, encryption_certificate_der, now
     )
     signature_key = signature.public_key().public_bytes(
         serialization.Encoding.DER,
@@ -65,6 +62,23 @@ def _validate_subscriber_authentication_encryption_certificates(
                 "signature and transport certificates require different RSA keys"
             )
     return authentication, encryption
+
+
+def _validate_subscriber_transport_certificates(
+    authentication_certificate_der: bytes,
+    encryption_certificate_der: bytes,
+    now: datetime,
+) -> tuple[x509.Certificate, x509.Certificate]:
+    """Validate the X002/E002 pair used by authenticated downloads."""
+
+    return (
+        _validate_self_signed_subscriber_certificate(
+            authentication_certificate_der, now, KeyPurpose.AUTHENTICATION
+        ),
+        _validate_self_signed_subscriber_certificate(
+            encryption_certificate_der, now, KeyPurpose.ENCRYPTION
+        ),
+    )
 
 
 def _validate_self_signed_subscriber_certificate(

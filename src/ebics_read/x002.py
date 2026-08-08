@@ -21,6 +21,7 @@ from .h005 import (
     ParsedH005Response,
     parse_h005_response,
 )
+from .interfaces import KeyProvider
 from .models import TrustedBankKeys
 
 _DS_NAMESPACE = "http://www.w3.org/2000/09/xmldsig#"
@@ -29,6 +30,68 @@ _RSA_SHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 _SHA256 = "http://www.w3.org/2001/04/xmlenc#sha256"
 _REFERENCE = "#xpointer(//*[@authenticate='true'])"
 _VERIFICATION_TOKEN = object()
+
+
+def _append_x002_auth_signature(
+    root: etree._Element,
+    key_provider: KeyProvider,
+    authentication_certificate_der: bytes,
+) -> None:
+    """Append the one fixed X002 request signature and verify provider output."""
+
+    auth_signature = etree.SubElement(
+        root, etree.QName(H005_NAMESPACE, "AuthSignature")
+    )
+    signed_info = etree.SubElement(
+        auth_signature, etree.QName(_DS_NAMESPACE, "SignedInfo")
+    )
+    etree.SubElement(
+        signed_info,
+        etree.QName(_DS_NAMESPACE, "CanonicalizationMethod"),
+        Algorithm=_C14N,
+    )
+    etree.SubElement(
+        signed_info,
+        etree.QName(_DS_NAMESPACE, "SignatureMethod"),
+        Algorithm=_RSA_SHA256,
+    )
+    reference = etree.SubElement(
+        signed_info, etree.QName(_DS_NAMESPACE, "Reference"), URI=_REFERENCE
+    )
+    transforms = etree.SubElement(reference, etree.QName(_DS_NAMESPACE, "Transforms"))
+    etree.SubElement(
+        transforms, etree.QName(_DS_NAMESPACE, "Transform"), Algorithm=_C14N
+    )
+    etree.SubElement(
+        reference, etree.QName(_DS_NAMESPACE, "DigestMethod"), Algorithm=_SHA256
+    )
+    etree.SubElement(
+        reference, etree.QName(_DS_NAMESPACE, "DigestValue")
+    ).text = base64.b64encode(
+        sha256(_canonical_authenticated_nodes(root)).digest()
+    ).decode("ascii")
+
+    canonical_signed_info = _canonical(signed_info)
+    signature = key_provider.sign_x002(canonical_signed_info)
+    certificate = x509.load_der_x509_certificate(authentication_certificate_der)
+    public_key = certificate.public_key()
+    if not isinstance(public_key, rsa.RSAPublicKey):
+        raise SecurityError("subscriber X002 key is not RSA")
+    key_bytes = (public_key.key_size + 7) // 8
+    if type(signature) is not bytes or not 1 <= len(signature) <= key_bytes:
+        raise SecurityError("X002 provider signature length is invalid")
+    try:
+        public_key.verify(
+            signature.rjust(key_bytes, b"\0"),
+            canonical_signed_info,
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+    except InvalidSignature as exc:
+        raise SecurityError("X002 provider returned an invalid signature") from exc
+    etree.SubElement(
+        auth_signature, etree.QName(_DS_NAMESPACE, "SignatureValue")
+    ).text = base64.b64encode(signature).decode("ascii")
 
 
 @dataclass(frozen=True, slots=True, init=False)

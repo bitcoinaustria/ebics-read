@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .certificates import (
+    SelfSignedH005BankCertificateProfile,
     _validate_subscriber_authentication_encryption_certificates,
     _validate_subscriber_signature_certificate,
+    _validate_subscriber_transport_certificates,
 )
 from .errors import (
     AmbiguousInitializationError,
@@ -18,8 +20,17 @@ from .errors import (
 )
 from .hev import parse_hev_response
 from .hia import _render_hia_letter
+from .hpb import _parse_hpb_response
 from .ini import _parse_key_initialization_response, _render_ini_letter
-from .interfaces import Clock, DocumentSink, KeyProvider, KeyPurpose, OperationControl
+from .interfaces import (
+    BankCertificateProfile,
+    Clock,
+    DocumentSink,
+    KeyProvider,
+    KeyPurpose,
+    NonceSource,
+    OperationControl,
+)
 from .models import (
     Bank,
     BtfDescriptor,
@@ -45,6 +56,10 @@ class EbicsBackend:
     xml_limits: XmlLimits = field(default_factory=XmlLimits)
     key_provider: KeyProvider | None = field(default=None, repr=False)
     clock: Clock | None = field(default=None, repr=False)
+    nonce_source: NonceSource | None = field(default=None, repr=False)
+    bank_certificate_profile: BankCertificateProfile = field(
+        default_factory=SelfSignedH005BankCertificateProfile, repr=False
+    )
 
     def probe_versions(self, bank: Bank, control: OperationControl) -> VersionDiscovery:
         request = _PreparedTransportRequest._for_hev(bank)
@@ -128,7 +143,40 @@ class EbicsBackend:
         protocol: NegotiatedProtocol,
         control: OperationControl,
     ) -> UntrustedBankKeys:
-        raise OperationNotImplementedError("HPB is not implemented")
+        if self.key_provider is None or self.clock is None or self.nonce_source is None:
+            raise ConfigurationError(
+                "HPB requires a key provider, clock, and nonce source"
+            )
+        authentication_der = self.key_provider.certificate_der(
+            KeyPurpose.AUTHENTICATION
+        )
+        encryption_der = self.key_provider.certificate_der(KeyPurpose.ENCRYPTION)
+        nonce = self.nonce_source.random_bytes(16)
+        if type(nonce) is not bytes or len(nonce) != 16:
+            raise ConfigurationError("HPB nonce source must return exactly 16 bytes")
+        requested_at = self.clock.now()
+        _validate_subscriber_transport_certificates(
+            authentication_der, encryption_der, requested_at
+        )
+        request = _PreparedTransportRequest._for_hpb(
+            bank,
+            subscriber,
+            protocol,
+            nonce,
+            requested_at,
+            self.key_provider,
+            authentication_der,
+        )
+        response = self.transport.exchange(request, control)
+        return _parse_hpb_response(
+            response.body,
+            bank,
+            encryption_der,
+            self.key_provider,
+            self.bank_certificate_profile,
+            self.clock.now(),
+            self.xml_limits,
+        )
 
     def discover_capabilities(
         self,

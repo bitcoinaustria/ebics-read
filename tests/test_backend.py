@@ -18,7 +18,6 @@ def test_unimplemented_allowlisted_operations_fail_before_transport() -> None:
         with pytest.raises(ConfigurationError, match="key provider and clock"):
             initialize(value, value, value, value)  # type: ignore[arg-type]
     calls = (
-        lambda: backend.fetch_bank_keys(value, value, value, value),
         lambda: backend.discover_capabilities(value, value, value, value, value),
         lambda: backend.download(
             value, value, value, value, value, value, value, value, value
@@ -28,3 +27,6 @@ def test_unimplemented_allowlisted_operations_fail_before_transport() -> None:
     for call in calls:
         with pytest.raises(OperationNotImplementedError):
             call()  # type: ignore[no-untyped-call]
+
+    with pytest.raises(ConfigurationError, match="key provider, clock, and nonce"):
+        backend.fetch_bank_keys(value, value, value, value)  # type: ignore[arg-type]

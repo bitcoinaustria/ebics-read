@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ssl
 from dataclasses import dataclass, field
+from datetime import datetime
 from http.client import HTTPResponse
 from math import isfinite
 from typing import Protocol
@@ -26,7 +27,7 @@ from .errors import (
     TransientTransportError,
     TransportError,
 )
-from .interfaces import Clock, OperationControl
+from .interfaces import Clock, KeyProvider, OperationControl
 from .models import Bank, NegotiatedProtocol, Subscriber
 from .orders import OrderType
 
@@ -134,6 +135,39 @@ class _PreparedTransportRequest:
             ),
         )
         object.__setattr__(request, "order", OrderType.HIA)
+        return request
+
+    @classmethod
+    def _for_hpb(
+        cls,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+        nonce: bytes,
+        timestamp: datetime,
+        key_provider: KeyProvider,
+        authentication_certificate_der: bytes,
+    ) -> _PreparedTransportRequest:
+        """Build the exact X002-authenticated H005 HPB request."""
+
+        from .hpb import _build_hpb_request_xml
+
+        request = object.__new__(cls)
+        object.__setattr__(request, "bank", bank)
+        object.__setattr__(
+            request,
+            "body",
+            _build_hpb_request_xml(
+                bank,
+                subscriber,
+                protocol,
+                nonce,
+                timestamp,
+                key_provider,
+                authentication_certificate_der,
+            ),
+        )
+        object.__setattr__(request, "order", OrderType.HPB)
         return request
 
 

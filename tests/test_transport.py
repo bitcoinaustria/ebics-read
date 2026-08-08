@@ -262,6 +262,19 @@ def test_only_fixed_operation_specific_requests_can_be_prepared() -> None:
         "encryption_certificate_der",
     )
     assert {"body", "xml", "order"}.isdisjoint(hia_parameters)
+    hpb_parameters = tuple(
+        inspect.signature(_PreparedTransportRequest._for_hpb).parameters
+    )
+    assert hpb_parameters == (
+        "bank",
+        "subscriber",
+        "protocol",
+        "nonce",
+        "timestamp",
+        "key_provider",
+        "authentication_certificate_der",
+    )
+    assert {"body", "xml", "order"}.isdisjoint(hpb_parameters)
 
 
 def test_operation_control_bounds_each_exchange(

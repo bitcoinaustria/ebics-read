@@ -41,8 +41,8 @@ Current foundation APIs provide:
 - exact X002 response digest/signature verification against the explicitly
   pinned bank authentication certificate;
 - fixed E002 transaction-key and incremental order-data decryption;
-- concrete HEV, INI, and HIA backends, including strict self-signed subscriber
-  certificate validation and printable initialization-letter data;
+- concrete HEV, INI, HIA, and HPB backends, including strict subscriber and
+  bank-candidate certificate validation and printable initialization letters;
 - production system-clock, CSPRNG nonce, deadline, and cancellation defaults;
 - HTTPS-only TLS 1.2+ transport with certificate verification, no redirects,
   no implicit environment proxy, and bounded responses;
@@ -51,7 +51,7 @@ Current foundation APIs provide:
 - synthetic deterministic testing helpers that must never hold production
   secrets.
 
-HEV, INI, and HIA are complete synthetic protocol transactions. HPB, discovery,
+HEV, INI, HIA, and HPB are complete synthetic protocol transactions. Discovery
 and segmented BTD execution remain unimplemented. Synthetic local-TLS and
 separately supplied official-schema evidence does not establish bank
 interoperability or conformance.

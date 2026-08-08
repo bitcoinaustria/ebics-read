@@ -34,5 +34,7 @@ All notable changes will be recorded here. The project has made no release.
   official-schema evidence, and deterministic initialization-letter data.
 - Exact end-to-end H005 HIA with strict X002/E002 subscriber-certificate
   validation and two-certificate initialization-letter data.
+- Exact H005 HPB with fresh replay protection, verified X002 request signing,
+  bounded E002 response processing, and untrusted bank-key candidates.
 - Architecture, threat-model, protocol-scope, key-lifecycle, interoperability,
   and clean-room source documentation.
