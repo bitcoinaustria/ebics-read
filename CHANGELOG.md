@@ -36,5 +36,8 @@ All notable changes will be recorded here. The project has made no release.
   validation and two-certificate initialization-letter data.
 - Exact H005 HPB with fresh replay protection, verified X002 request signing,
   bounded E002 response processing, and untrusted bank-key candidates.
+- Exact segmented H005 HAA with X002-authenticated control metadata, bounded
+  E002 processing, durable transaction replay claims, strict BTF services, and
+  verified positive or negative receipts.
 - Architecture, threat-model, protocol-scope, key-lifecycle, interoperability,
   and clean-room source documentation.

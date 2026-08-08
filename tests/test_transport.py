@@ -275,6 +275,39 @@ def test_only_fixed_operation_specific_requests_can_be_prepared() -> None:
         "authentication_certificate_der",
     )
     assert {"body", "xml", "order"}.isdisjoint(hpb_parameters)
+    assert tuple(
+        inspect.signature(_PreparedTransportRequest._for_haa_initialization).parameters
+    ) == (
+        "bank",
+        "subscriber",
+        "protocol",
+        "trusted_bank_keys",
+        "nonce",
+        "timestamp",
+        "key_provider",
+        "authentication_certificate_der",
+    )
+    assert tuple(
+        inspect.signature(_PreparedTransportRequest._for_haa_transfer).parameters
+    ) == (
+        "bank",
+        "protocol",
+        "transaction_id",
+        "segment_number",
+        "key_provider",
+        "authentication_certificate_der",
+    )
+    assert tuple(
+        inspect.signature(_PreparedTransportRequest._for_haa_receipt).parameters
+    ) == (
+        "bank",
+        "protocol",
+        "transaction_id",
+        "receipt",
+        "key_provider",
+        "authentication_certificate_der",
+    )
+    assert not hasattr(_PreparedTransportRequest, "_prepared")
 
 
 def test_operation_control_bounds_each_exchange(

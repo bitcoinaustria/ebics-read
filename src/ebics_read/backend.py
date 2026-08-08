@@ -13,10 +13,20 @@ from .certificates import (
 from .errors import (
     AmbiguousInitializationError,
     ConfigurationError,
+    EbicsReturnCodeError,
     OperationNotImplementedError,
+    ProtocolError,
     ResponseLimitError,
     TransientTransportError,
     TransportError,
+)
+from .haa import (
+    _decode_haa_services,
+    _encoded_order_data_limit,
+    _parse_haa_initial_response,
+    _parse_haa_receipt_response,
+    _parse_haa_transfer_response,
+    _validate_order_data_fragment,
 )
 from .hev import parse_hev_response
 from .hia import _render_hia_letter
@@ -30,6 +40,7 @@ from .interfaces import (
     KeyPurpose,
     NonceSource,
     OperationControl,
+    SessionStore,
 )
 from .models import (
     Bank,
@@ -39,11 +50,15 @@ from .models import (
     DownloadOptions,
     InitializationLetter,
     NegotiatedProtocol,
+    ProtocolLimits,
+    ReceiptKind,
     Subscriber,
+    TransactionId,
     TrustedBankKeys,
     UntrustedBankKeys,
     VersionDiscovery,
 )
+from .orders import OrderType
 from .transport import EbicsTransport, _PreparedTransportRequest
 from .xml import XmlLimits
 
@@ -60,6 +75,8 @@ class EbicsBackend:
     bank_certificate_profile: BankCertificateProfile = field(
         default_factory=SelfSignedH005BankCertificateProfile, repr=False
     )
+    session_store: SessionStore | None = field(default=None, repr=False)
+    protocol_limits: ProtocolLimits = field(default_factory=ProtocolLimits, repr=False)
 
     def probe_versions(self, bank: Bank, control: OperationControl) -> VersionDiscovery:
         request = _PreparedTransportRequest._for_hev(bank)
@@ -186,7 +203,158 @@ class EbicsBackend:
         trusted_bank_keys: TrustedBankKeys,
         control: OperationControl,
     ) -> CapabilityDiscovery:
-        raise OperationNotImplementedError("discovery is not implemented")
+        if (
+            self.key_provider is None
+            or self.clock is None
+            or self.nonce_source is None
+            or self.session_store is None
+        ):
+            raise ConfigurationError(
+                "HAA requires a key provider, clock, nonce source, and session store"
+            )
+        authentication_der = self.key_provider.certificate_der(
+            KeyPurpose.AUTHENTICATION
+        )
+        encryption_der = self.key_provider.certificate_der(KeyPurpose.ENCRYPTION)
+        nonce = self.nonce_source.random_bytes(16)
+        if type(nonce) is not bytes or len(nonce) != 16:
+            raise ConfigurationError("HAA nonce source must return exactly 16 bytes")
+        requested_at = self.clock.now()
+        _validate_subscriber_transport_certificates(
+            authentication_der, encryption_der, requested_at
+        )
+        request = _PreparedTransportRequest._for_haa_initialization(
+            bank,
+            subscriber,
+            protocol,
+            trusted_bank_keys,
+            nonce,
+            requested_at,
+            self.key_provider,
+            authentication_der,
+        )
+        response = self.transport.exchange(request, control)
+        try:
+            initialization = _parse_haa_initial_response(
+                response.body,
+                trusted_bank_keys,
+                encryption_der,
+                self.key_provider,
+                self.xml_limits,
+                self.protocol_limits,
+            )
+        except EbicsReturnCodeError as exc:
+            if exc.technical == "091006" and exc.business == "000000":
+                return CapabilityDiscovery(unsupported_orders=(OrderType.HAA,))
+            raise
+        self.session_store.claim_transaction_id(initialization.transaction_id)
+        fragments: list[str] = []
+        final_fragment = (
+            initialization.first_fragment
+            if initialization.total_segments == 1
+            else None
+        )
+        encoded_size = 0
+        encoded_limit = _encoded_order_data_limit(self.protocol_limits)
+        if initialization.total_segments > 1:
+            first_fragment = _validate_order_data_fragment(
+                initialization.first_fragment, last=False
+            )
+            fragments.append(first_fragment)
+            encoded_size = len(first_fragment)
+            if encoded_size > encoded_limit:
+                raise ResponseLimitError(
+                    "HAA encoded order data exceeds the configured limit"
+                )
+        for segment_number in range(2, initialization.total_segments + 1):
+            request = _PreparedTransportRequest._for_haa_transfer(
+                bank,
+                protocol,
+                initialization.transaction_id,
+                segment_number,
+                self.key_provider,
+                authentication_der,
+            )
+            response = self.transport.exchange(request, control)
+            fragment = _parse_haa_transfer_response(
+                response.body,
+                trusted_bank_keys,
+                initialization.transaction_id,
+                segment_number,
+                initialization.total_segments,
+                self.xml_limits,
+            )
+            if segment_number < initialization.total_segments:
+                value = _validate_order_data_fragment(fragment, last=False)
+                next_encoded_size = encoded_size + len(value)
+                if next_encoded_size > encoded_limit:
+                    raise ResponseLimitError(
+                        "HAA encoded order data exceeds the configured limit"
+                    )
+                fragments.append(value)
+                encoded_size = next_encoded_size
+            else:
+                final_fragment = fragment
+        if final_fragment is None:
+            raise AssertionError("HAA final segment was not collected")
+        try:
+            fragments.append(_validate_order_data_fragment(final_fragment, last=True))
+            services = _decode_haa_services(
+                fragments,
+                initialization.transaction_key,
+                self.xml_limits,
+                self.protocol_limits,
+            )
+        except ProtocolError:
+            self._acknowledge_haa(
+                bank,
+                protocol,
+                trusted_bank_keys,
+                initialization.transaction_id,
+                ReceiptKind.NEGATIVE,
+                authentication_der,
+                control,
+            )
+            raise
+        self._acknowledge_haa(
+            bank,
+            protocol,
+            trusted_bank_keys,
+            initialization.transaction_id,
+            ReceiptKind.POSITIVE,
+            authentication_der,
+            control,
+        )
+        return CapabilityDiscovery(services=services, completed_orders=(OrderType.HAA,))
+
+    def _acknowledge_haa(
+        self,
+        bank: Bank,
+        protocol: NegotiatedProtocol,
+        trusted_bank_keys: TrustedBankKeys,
+        transaction_id: TransactionId,
+        receipt: ReceiptKind,
+        authentication_der: bytes,
+        control: OperationControl,
+    ) -> None:
+        if self.key_provider is None:
+            raise AssertionError("HAA key provider disappeared")
+        request = _PreparedTransportRequest._for_haa_receipt(
+            bank,
+            protocol,
+            transaction_id,
+            receipt,
+            self.key_provider,
+            authentication_der,
+        )
+        response = self.transport.exchange(request, control)
+        _parse_haa_receipt_response(
+            response.body,
+            trusted_bank_keys,
+            transaction_id,
+            receipt,
+            self.xml_limits,
+        )
 
     def download(
         self,

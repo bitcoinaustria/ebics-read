@@ -58,6 +58,12 @@ certification evidence:
 
 Unknown algorithm identifiers fail closed.
 
+HAA uses the standard segmented download transaction. Each Base64 segment is
+individually conformant and at most 1 MiB; the concatenated value is decoded,
+E002-decrypted, zlib-expanded, and parsed into exact restricted BTF services.
+The H005 X002 selection authenticates transaction and encryption metadata, not
+`OrderData` itself, so payload integrity also depends on verified TLS.
+
 ## BTF/BTD
 
 A `BtfDescriptor` represents ServiceName, MsgName, and any present optional

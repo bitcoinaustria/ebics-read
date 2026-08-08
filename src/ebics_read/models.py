@@ -119,10 +119,12 @@ class Subscriber:
 
 
 class ContainerType(str, Enum):
-    """Container handling requested for a BTF download."""
+    """Container handling advertised or requested for a BTF download."""
 
     NONE = "NONE"
     ZIP = "ZIP"
+    XML = "XML"
+    SVC = "SVC"
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,7 +215,7 @@ class DownloadOptions:
 
 @dataclass(frozen=True, slots=True)
 class ProtocolLimits:
-    """Fail-closed resource limits for future BTD processing."""
+    """Fail-closed resource limits for discovery and BTD processing."""
 
     max_segments: int = 10_000
     max_compressed_bytes: int = 64 * 1024 * 1024

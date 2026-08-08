@@ -21,6 +21,7 @@ from .models import (
     DownloadSession,
     SegmentReference,
     SessionLease,
+    TransactionId,
     TrustedBankKeys,
     UntrustedBankKeys,
 )
@@ -173,11 +174,16 @@ class InMemorySessionStore:
             raise SessionConflictError(
                 "state is not the exact initialization transition"
             )
-        if state.transaction_id.value in self._transaction_claims:
-            raise ReplayError("bank transaction ID was already claimed")
-        self._transaction_claims.add(state.transaction_id.value)
+        self.claim_transaction_id(state.transaction_id)
         self._states[lease.session_id] = state
         return True
+
+    def claim_transaction_id(self, transaction_id: TransactionId) -> None:
+        if not isinstance(transaction_id, TransactionId):
+            raise TypeError("transaction_id must be a TransactionId")
+        if transaction_id.value in self._transaction_claims:
+            raise ReplayError("bank transaction ID was already claimed")
+        self._transaction_claims.add(transaction_id.value)
 
     def delete(self, lease: SessionLease, expected_revision: int) -> bool:
         self._require_lease(lease)

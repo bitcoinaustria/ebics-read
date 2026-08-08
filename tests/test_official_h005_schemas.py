@@ -15,6 +15,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import NameOID
 from lxml import etree
+from test_haa import _discover as _discover_haa
+from test_haa import _order_data as _haa_order_data
+from test_haa import _response as _haa_response
+from test_haa import _setup as _setup_haa
 
 from ebics_read import Bank, KeyPurpose, NegotiatedProtocol, Subscriber
 from ebics_read.transport import _PreparedTransportRequest
@@ -258,6 +262,57 @@ def test_generated_hpb_request_and_synthetic_response_match_official_schemas() -
     etree.XMLSchema(
         etree.parse(directory / "ebics_keymgmt_response_H005.xsd", parser)
     ).assertValid(response)
+
+
+@pytest.mark.schema
+def test_generated_haa_transaction_matches_external_official_h005_schemas() -> None:
+    directory = _official_schema_directory()
+    parser = etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        recover=False,
+        huge_tree=False,
+    )
+    backend, transport, trusted = _setup_haa()
+    _discover_haa(backend, trusted)
+    request_schema = etree.XMLSchema(
+        etree.parse(directory / "ebics_request_H005.xsd", parser)
+    )
+    for request in transport.requests:
+        request_schema.assertValid(etree.fromstring(request.body, parser))
+    response_schema = etree.XMLSchema(
+        etree.parse(directory / "ebics_response_H005.xsd", parser)
+    )
+    for response in (
+        _haa_response(
+            transport.bank_key,
+            "Initialisation",
+            transaction_id="00112233445566778899AABBCCDDEEFF",
+            total_segments=2,
+            segment_number=1,
+            fragment=transport.fragments[0],
+            encryption_der=transport.encryption_der,
+        ),
+        _haa_response(
+            transport.bank_key,
+            "Transfer",
+            transaction_id="00112233445566778899AABBCCDDEEFF",
+            total_segments=2,
+            segment_number=2,
+            fragment=transport.fragments[1],
+        ),
+        _haa_response(
+            transport.bank_key,
+            "Receipt",
+            transaction_id="00112233445566778899AABBCCDDEEFF",
+            technical="011000",
+        ),
+    ):
+        response_schema.assertValid(etree.fromstring(response, parser))
+    etree.XMLSchema(
+        etree.parse(directory / "ebics_orders_H005.xsd", parser)
+    ).assertValid(etree.fromstring(_haa_order_data(), parser))
 
 
 def test_rejects_replacement_h005_schema_bundle(tmp_path: Path) -> None:

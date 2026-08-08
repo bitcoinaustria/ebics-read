@@ -17,6 +17,7 @@ from .models import (
     RetrievalProvenance,
     SegmentReference,
     SessionLease,
+    TransactionId,
     TrustedBankKeys,
     UntrustedBankKeys,
     ZipMemberIdentity,
@@ -103,6 +104,9 @@ class SessionStore(Protocol):
         Every duplicate ID fails as replay. The global claim remains after deletion;
         ``False`` means the revision no longer matches.
         """
+
+    def claim_transaction_id(self, transaction_id: TransactionId) -> None:
+        """Durably reject reuse of one authenticated bank transaction ID."""
 
     def delete(self, lease: SessionLease, expected_revision: int) -> bool:
         """Atomically remove completed or invalidated state."""

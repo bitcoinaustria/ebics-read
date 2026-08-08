@@ -15,7 +15,7 @@ interoperability has been demonstrated.
 | Module | Responsibility |
 | --- | --- |
 | `client` | Explicit HEV, INI, HIA, HPB, discovery, trust acceptance, and BTD facade |
-| `backend` | Concrete fixed-operation engine; currently connects HEV, INI, HIA, and HPB |
+| `backend` | Concrete fixed-operation engine; currently connects HEV, INI, HIA, HPB, and HAA |
 | `models` | Immutable, bounded configuration, descriptor, capability, key, and result values |
 | `orders` | Complete fixed allowlist; no generic order constructor |
 | `interfaces` | Injected keys, bank trust, clock, nonce, leased state, segment spool, streaming sink, and operation-control boundaries |
@@ -25,6 +25,7 @@ interoperability has been demonstrated.
 | `h005` | Fixed common response shapes and contextual return-code allowlists |
 | `hia` | Exact unsecured HIA request data and two-certificate letter rendering |
 | `hpb` | Exact signed HPB request and bounded untrusted bank-key extraction |
+| `haa` | Exact segmented HAA transaction and strict service discovery |
 | `x002` | Exact authenticated-node digest and pinned-bank RSA verification |
 | `e002` | Fixed incremental AES-128-CBC order-data decryption |
 | `ini` | Exact unsecured INI request data, response checks, and letter rendering |
@@ -63,16 +64,21 @@ The transport protocol receives only a read-only request view plus the
 whole-operation control. The default transport accepts only the protocol core's
 private prepared request type. There is no factory that accepts caller XML or an
 order argument: the current builders construct only exact HEV/H000, INI/H005,
-HIA/H005, and HPB/H005 requests. Future operations require equally specific fixed-shape
-builders.
+HIA/H005, HPB/H005, and fixed-phase HAA/H005 requests. Future operations require
+equally specific fixed-shape builders.
 
-`EbicsBackend` completes HEV, INI, HIA, and HPB as fixed vertical slices. INI and HIA
+`EbicsBackend` completes HEV, INI, HIA, HPB, and HAA as fixed vertical slices. INI and HIA
 request only fixed provider certificate roles, validate their self-signed
 profiles, emit exact compressed unsecured requests, accept deliberately unsigned
 responses only through verified TLS, and return deterministic letter data.
 HPB creates a fresh nonce and timestamp, locally verifies the provider's X002
 signature, bounds E002 decryption and decompression, validates the returned bank
 certificates, and leaves them unusable until explicit out-of-band acceptance.
+HAA authenticates response control and encryption metadata with the pinned X002
+bank key, rejects replayed transaction IDs, enforces base64-conformant 1 MiB
+segments and aggregate limits, and acknowledges only coherent complete data.
+H005 does not X002-authenticate `OrderData`; HAA payload integrity therefore also
+depends on verified TLS, and no bank electronic signature is claimed.
 The client performs mandatory HEV negotiation first; missing operation
 dependencies are rejected before the corresponding request is sent. Remaining
 backend operations fail with a typed not-implemented error.
@@ -92,11 +98,10 @@ Initialization and downloads are separate workflows:
 7. `download()` performs BTD only after the trust store yields `TrustedBankKeys`.
 
 An authenticated 128-bit bank transaction ID is represented by `TransactionId`
-and globally claimed in the same atomic `SessionStore.initialize_transaction()`
-operation that persists initialized session state. Every duplicate fails as a
-replay, and claims remain after terminal or completed sessions. There is no
-claim-before-persist crash window and endpoint changes do not create a new replay
-namespace.
+and globally claimed through `SessionStore`. BTD combines that claim with its
+initial state transition; HAA claims the ID directly but does not yet implement
+the optional transfer or receipt recovery flow. Every duplicate fails as a
+replay, and claims remain after terminal or completed transactions.
 
 Downloaded HPB keys never become trusted as a side effect of network activity.
 Every operation after HEV receives an exact immutable `NegotiatedProtocol` from
