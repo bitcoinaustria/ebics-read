@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 from .certificates import (
     SelfSignedH005BankCertificateProfile,
@@ -23,6 +25,8 @@ from .errors import (
 from .haa import (
     _decode_haa_services,
     _encoded_order_data_limit,
+    _HaaInitialResponse,
+    _HaaOrderDataFragment,
     _parse_haa_initial_response,
     _parse_haa_receipt_response,
     _parse_haa_transfer_response,
@@ -61,6 +65,8 @@ from .models import (
 from .orders import OrderType
 from .transport import EbicsTransport, _PreparedTransportRequest
 from .xml import XmlLimits
+
+_DiscoveryPayload = TypeVar("_DiscoveryPayload")
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,10 +218,9 @@ class EbicsBackend:
             raise ConfigurationError(
                 "HAA requires a key provider, clock, nonce source, and session store"
             )
-        authentication_der = self.key_provider.certificate_der(
-            KeyPurpose.AUTHENTICATION
-        )
-        encryption_der = self.key_provider.certificate_der(KeyPurpose.ENCRYPTION)
+        key_provider = self.key_provider
+        authentication_der = key_provider.certificate_der(KeyPurpose.AUTHENTICATION)
+        encryption_der = key_provider.certificate_der(KeyPurpose.ENCRYPTION)
         nonce = self.nonce_source.random_bytes(16)
         if type(nonce) is not bytes or len(nonce) != 16:
             raise ConfigurationError("HAA nonce source must return exactly 16 bytes")
@@ -230,7 +235,7 @@ class EbicsBackend:
             trusted_bank_keys,
             nonce,
             requested_at,
-            self.key_provider,
+            key_provider,
             authentication_der,
         )
         response = self.transport.exchange(request, control)
@@ -239,7 +244,7 @@ class EbicsBackend:
                 response.body,
                 trusted_bank_keys,
                 encryption_der,
-                self.key_provider,
+                key_provider,
                 self.xml_limits,
                 self.protocol_limits,
             )
@@ -247,6 +252,69 @@ class EbicsBackend:
             if exc.technical == "091006" and exc.business == "000000":
                 return CapabilityDiscovery(unsupported_orders=(OrderType.HAA,))
             raise
+        services = self._download_metadata(
+            initialization,
+            lambda transaction_id, segment_number: (
+                _PreparedTransportRequest._for_haa_transfer(
+                    bank,
+                    protocol,
+                    transaction_id,
+                    segment_number,
+                    key_provider,
+                    authentication_der,
+                )
+            ),
+            lambda body, transaction_id, segment_number, total_segments: (
+                _parse_haa_transfer_response(
+                    body,
+                    trusted_bank_keys,
+                    transaction_id,
+                    segment_number,
+                    total_segments,
+                    self.xml_limits,
+                )
+            ),
+            lambda fragments, transaction_key: _decode_haa_services(
+                fragments,
+                transaction_key,
+                self.xml_limits,
+                self.protocol_limits,
+            ),
+            lambda transaction_id, receipt: _PreparedTransportRequest._for_haa_receipt(
+                bank,
+                protocol,
+                transaction_id,
+                receipt,
+                key_provider,
+                authentication_der,
+            ),
+            lambda body, transaction_id, receipt: _parse_haa_receipt_response(
+                body,
+                trusted_bank_keys,
+                transaction_id,
+                receipt,
+                self.xml_limits,
+            ),
+            control,
+        )
+        return CapabilityDiscovery(services=services, completed_orders=(OrderType.HAA,))
+
+    def _download_metadata(
+        self,
+        initialization: _HaaInitialResponse,
+        transfer_request: Callable[[TransactionId, int], _PreparedTransportRequest],
+        parse_transfer: Callable[
+            [bytes, TransactionId, int, int], _HaaOrderDataFragment
+        ],
+        decode_payload: Callable[[list[str], bytes], _DiscoveryPayload],
+        receipt_request: Callable[
+            [TransactionId, ReceiptKind], _PreparedTransportRequest
+        ],
+        parse_receipt: Callable[[bytes, TransactionId, ReceiptKind], None],
+        control: OperationControl,
+    ) -> _DiscoveryPayload:
+        if self.session_store is None:
+            raise AssertionError("metadata-download session store disappeared")
         self.session_store.claim_transaction_id(initialization.transaction_id)
         fragments: list[str] = []
         final_fragment = (
@@ -267,22 +335,13 @@ class EbicsBackend:
                     "HAA encoded order data exceeds the configured limit"
                 )
         for segment_number in range(2, initialization.total_segments + 1):
-            request = _PreparedTransportRequest._for_haa_transfer(
-                bank,
-                protocol,
-                initialization.transaction_id,
-                segment_number,
-                self.key_provider,
-                authentication_der,
-            )
+            request = transfer_request(initialization.transaction_id, segment_number)
             response = self.transport.exchange(request, control)
-            fragment = _parse_haa_transfer_response(
+            fragment = parse_transfer(
                 response.body,
-                trusted_bank_keys,
                 initialization.transaction_id,
                 segment_number,
                 initialization.total_segments,
-                self.xml_limits,
             )
             if segment_number < initialization.total_segments:
                 value = _validate_order_data_fragment(fragment, last=False)
@@ -299,62 +358,38 @@ class EbicsBackend:
             raise AssertionError("HAA final segment was not collected")
         try:
             fragments.append(_validate_order_data_fragment(final_fragment, last=True))
-            services = _decode_haa_services(
-                fragments,
-                initialization.transaction_key,
-                self.xml_limits,
-                self.protocol_limits,
-            )
+            payload = decode_payload(fragments, initialization.transaction_key)
         except ProtocolError:
-            self._acknowledge_haa(
-                bank,
-                protocol,
-                trusted_bank_keys,
+            self._acknowledge_metadata(
                 initialization.transaction_id,
                 ReceiptKind.NEGATIVE,
-                authentication_der,
+                receipt_request,
+                parse_receipt,
                 control,
             )
             raise
-        self._acknowledge_haa(
-            bank,
-            protocol,
-            trusted_bank_keys,
+        self._acknowledge_metadata(
             initialization.transaction_id,
             ReceiptKind.POSITIVE,
-            authentication_der,
+            receipt_request,
+            parse_receipt,
             control,
         )
-        return CapabilityDiscovery(services=services, completed_orders=(OrderType.HAA,))
+        return payload
 
-    def _acknowledge_haa(
+    def _acknowledge_metadata(
         self,
-        bank: Bank,
-        protocol: NegotiatedProtocol,
-        trusted_bank_keys: TrustedBankKeys,
         transaction_id: TransactionId,
         receipt: ReceiptKind,
-        authentication_der: bytes,
+        receipt_request: Callable[
+            [TransactionId, ReceiptKind], _PreparedTransportRequest
+        ],
+        parse_receipt: Callable[[bytes, TransactionId, ReceiptKind], None],
         control: OperationControl,
     ) -> None:
-        if self.key_provider is None:
-            raise AssertionError("HAA key provider disappeared")
-        request = _PreparedTransportRequest._for_haa_receipt(
-            bank,
-            protocol,
-            transaction_id,
-            receipt,
-            self.key_provider,
-            authentication_der,
-        )
+        request = receipt_request(transaction_id, receipt)
         response = self.transport.exchange(request, control)
-        _parse_haa_receipt_response(
-            response.body,
-            trusted_bank_keys,
-            transaction_id,
-            receipt,
-            self.xml_limits,
-        )
+        parse_receipt(response.body, transaction_id, receipt)
 
     def download(
         self,

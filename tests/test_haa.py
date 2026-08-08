@@ -130,6 +130,7 @@ class _Transport:
     fragments: tuple[str, ...]
     technical: str = "000000"
     business: str = "000000"
+    transfer_technical: str | None = None
     tamper_segment: int | None = None
     requests: list[_PreparedTransportRequest] = field(default_factory=list)
 
@@ -165,6 +166,17 @@ class _Transport:
             )
         if phase == "Transfer":
             segment = int(root.findtext(f".//{{{_H005}}}SegmentNumber") or "0")
+            if self.transfer_technical is not None:
+                return TransportResponse(
+                    _response(
+                        self.bank_key,
+                        phase,
+                        transaction_id=_TRANSACTION_ID,
+                        segment_number=segment,
+                        total_segments=len(self.fragments),
+                        technical=self.transfer_technical,
+                    )
+                )
             response = _response(
                 self.bank_key,
                 phase,
@@ -494,6 +506,13 @@ def test_haa_maps_only_authenticated_unsupported_order_and_rejects_replay() -> N
         "000000",
         "090005",
     )
+
+    backend, transport, trusted = _setup()
+    transport.transfer_technical = "091006"
+    with pytest.raises(EbicsReturnCodeError) as mid_transaction:
+        _discover(backend, trusted)
+    assert mid_transaction.value.technical == "091006"
+    assert len(transport.requests) == 2
 
 
 def test_haa_rejects_malformed_unsupported_response() -> None:
