@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from ebics_read import UnknownReturnCodeError, XmlSecurityError
@@ -132,7 +134,12 @@ def test_h005_common_transaction_fields_follow_the_schema_shape() -> None:
             b"2026-08-08T12:00:00Z</TimestampBankParameter></body>",
         )
     )
-    assert parse_h005_response(rich).return_codes.technical == "000000"
+    parsed = parse_h005_response(rich)
+    assert parsed.return_codes.technical == "000000"
+    assert parsed.bank_parameter_timestamp == datetime(
+        2026, 8, 8, 12, tzinfo=timezone.utc
+    )
+    assert parse_h005_response(response()).bank_parameter_timestamp is None
 
     attacks = (
         rich.replace(b"0123456789abcdef0123456789ABCDEF", b"not-a-transaction-id"),

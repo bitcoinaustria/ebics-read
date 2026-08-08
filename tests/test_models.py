@@ -444,6 +444,8 @@ def test_discovery_models_preserve_only_read_relevant_typed_results() -> None:
         replace(parameters, authentication_versions=("A006",))
     with pytest.raises(TypeError):
         replace(parameters, recovery_supported=1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        replace(parameters, updated_at="tomorrow")  # type: ignore[arg-type]
     with pytest.raises(ConfigurationError):
         DiscoveredAccount("ACCOUNT", currency="EURO")
     with pytest.raises(ConfigurationError):

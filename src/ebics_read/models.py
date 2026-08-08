@@ -1083,6 +1083,7 @@ class BankParameters:
     recovery_supported: bool
     client_data_download_supported: bool
     downloadable_order_data_supported: bool
+    updated_at: datetime | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -1136,6 +1137,8 @@ class BankParameters:
             )
         ):
             raise TypeError("HPD support flags must be booleans")
+        if self.updated_at is not None and not isinstance(self.updated_at, datetime):
+            raise TypeError("updated_at must be a datetime")
 
 
 @dataclass(frozen=True, slots=True)

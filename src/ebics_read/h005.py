@@ -123,6 +123,7 @@ class ParsedH005Response:
     header: etree._Element = field(repr=False, init=False)
     body: etree._Element = field(repr=False, init=False)
     return_codes: H005ReturnCodes = field(init=False)
+    bank_parameter_timestamp: datetime | None = field(init=False)
 
     def __init__(
         self,
@@ -132,6 +133,7 @@ class ParsedH005Response:
         header: etree._Element,
         body: etree._Element,
         return_codes: H005ReturnCodes,
+        bank_parameter_timestamp: datetime | None,
         *,
         _token: object | None = None,
     ) -> None:
@@ -143,6 +145,7 @@ class ParsedH005Response:
         object.__setattr__(self, "header", header)
         object.__setattr__(self, "body", body)
         object.__setattr__(self, "return_codes", return_codes)
+        object.__setattr__(self, "bank_parameter_timestamp", bank_parameter_timestamp)
 
 
 def parse_h005_response(
@@ -239,6 +242,7 @@ def parse_h005_response(
         for child in body
         if child.tag == f"{{{H005_NAMESPACE}}}TimestampBankParameter"
     ]
+    parsed_timestamp = None
     if timestamp:
         _require_authentication_marker(timestamp[0], "bank-parameter timestamp")
         value = _leaf_text(timestamp[0])
@@ -263,6 +267,7 @@ def parse_h005_response(
         header,
         body,
         H005ReturnCodes(technical_code, business_code, report_text),
+        parsed_timestamp,
         _token=_PARSE_TOKEN,
     )
 
