@@ -14,6 +14,14 @@ provider operations; private keys are never exported.
 INI initializes the signature certificate. HIA initializes authentication and
 encryption certificates. Both operations produce initialization-letter data for
 the bank's out-of-band activation process. They are not business uploads.
+The implemented INI path accepts only the fixed self-signed A006 subscriber
+profile: exact DER X.509v3, RSA/SHA-256 with a 2048–4096-bit `rsaEncryption`
+key, current bounded validity, matching AKI/SKI, content-commitment key usage,
+and no CA, EKU, CRL, or unknown-critical-extension capability. Additional
+KeyUsage bits are retained when content-commitment is present, as required by
+the return-code annex. `Bank.institution_name` supplies the letter recipient and
+does not affect bank identity. The letter prints the exact transmitted
+certificate as PEM and hashes the original DER bytes.
 
 Production storage is a host decision. SQLCipher, an OS credential store,
 PKCS#11, or an HSM integration belongs outside this package. The March 2026
@@ -61,12 +69,12 @@ never replaces a pin silently. Rotation repeats the same out-of-band comparison.
 
 HCA/HCS renewal and SPR suspension are out of v1 scope. Expired or suspended
 subscribers must follow the bank's INI/HIA initialization-letter process again.
-The v1 self-signed Austrian/German profile checks certificate time validity,
-RSA/SHA-256 with `rsaEncryption` SPKI, 2048–16384-bit RSA, bounded validity and
-serial number, exact role key usage, self-key authority identifier, unknown
-critical extensions, forbidden EKU/freshest-CRL, self-signature, and separate
-authentication and encryption keys. CA-issued profiles, including CFONB deployments, remain a
-separate future profile rather than a validation bypass.
+The v1 self-signed bank profile checks certificate time validity, RSA/SHA-256
+with `rsaEncryption` SPKI, 2048–16384-bit RSA, bounded validity and serial
+number, exact role key usage, self-key authority identifier, unknown critical
+extensions, forbidden EKU/freshest-CRL, self-signature, and separate
+authentication and encryption keys. CA-issued profiles, including CFONB
+deployments, remain a separate future profile rather than a validation bypass.
 
 ## Memory limitations
 

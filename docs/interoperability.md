@@ -5,16 +5,17 @@
 - **Synthetic:** original fixtures generated for this repository.
 - **Schema:** validated against separately downloaded official schemas with
   recorded hashes; an opt-in H000 test validates the HEV request and response
-  when `EBICS_READ_H000_XSD` names the separately supplied official file.
+  when `EBICS_READ_H000_XSD` names the separately supplied official file. An
+  opt-in H005 bundle test validates generated INI and decompressed S002 data.
 - **Mock:** a verified local-TLS synthetic endpoint exercises fixed HEV request
   construction, HTTPS transport, bounded parsing, and H005 selection; the test
   is enabled in the default supported Python/OS CI matrix.
 - **Live:** exercised with a consenting user's ordinary bank-issued read-only
   credentials; no such evidence exists yet.
 
-Current evidence is normative-document review, synthetic foundation tests,
-external official-H000-schema validation, and a local-TLS HEV transaction. It
-proves neither EBICS conformance nor bank compatibility.
+Current evidence is normative-document review, synthetic foundation and INI
+tests, external official H000/H005/S002 schema validation, and a local-TLS HEV
+transaction. It proves neither EBICS conformance nor bank compatibility.
 
 ## Live harness rules
 

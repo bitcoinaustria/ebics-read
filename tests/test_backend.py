@@ -1,6 +1,6 @@
 import pytest
 
-from ebics_read import EbicsBackend, OperationNotImplementedError
+from ebics_read import ConfigurationError, EbicsBackend, OperationNotImplementedError
 
 
 class _UnusedTransport:
@@ -11,8 +11,9 @@ class _UnusedTransport:
 def test_unimplemented_allowlisted_operations_fail_before_transport() -> None:
     backend = EbicsBackend(_UnusedTransport())  # type: ignore[arg-type]
     value = object()
+    with pytest.raises(ConfigurationError, match="key provider and clock"):
+        backend.initialize_signature_key(value, value, value, value)  # type: ignore[arg-type]
     calls = (
-        lambda: backend.initialize_signature_key(value, value, value, value),
         lambda: backend.initialize_auth_encryption_keys(value, value, value, value),
         lambda: backend.fetch_bank_keys(value, value, value, value),
         lambda: backend.discover_capabilities(value, value, value, value, value),

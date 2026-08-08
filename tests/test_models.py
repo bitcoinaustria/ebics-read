@@ -79,15 +79,21 @@ def test_bank_requires_strict_https_endpoint() -> None:
             Bank(endpoint, "HOST")
     with pytest.raises(ConfigurationError, match="H005 limit"):
         Bank("https://bank.invalid/ebics", "H" * 36)
+    with pytest.raises(ConfigurationError, match="institution_name"):
+        Bank("https://bank.invalid/ebics", "HOST", "")
+    assert Bank("https://bank.invalid/ebics", "HOST", "Bank A") == Bank(
+        "https://bank.invalid/ebics", "HOST", "Bank B"
+    )
 
 
 def test_sensitive_models_hide_values_from_repr() -> None:
-    bank = Bank("https://bank.invalid/ebics", "HOST-REPR")
+    bank = Bank("https://bank.invalid/ebics", "HOST-REPR", "PRIVATE BANK NAME")
     subscriber = Subscriber("PARTNER=REPR", "USER,REPR")
     account = AccountSelector(iban="AT611904300234573201")
     transaction_id = TransactionId("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
     assert "bank.invalid" not in repr(bank)
     assert "HOST-REPR" not in repr(bank)
+    assert "PRIVATE BANK NAME" not in repr(bank)
     assert "PARTNER-REPR" not in repr(subscriber)
     assert "AT611" not in repr(account)
     assert "AAAAAAAA" not in repr(transaction_id)

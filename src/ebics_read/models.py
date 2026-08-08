@@ -71,6 +71,7 @@ class Bank:
 
     endpoint: str = field(repr=False)
     host_id: str = field(repr=False)
+    institution_name: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         parts = urlsplit(self.endpoint)
@@ -88,6 +89,8 @@ class Bank:
         _require_identifier("host_id", self.host_id)
         if len(self.host_id) > 35:
             raise ConfigurationError("host_id exceeds the H005 limit")
+        if self.institution_name is not None:
+            _require_xml_token("institution_name", self.institution_name, 128)
 
 
 @dataclass(frozen=True, slots=True)

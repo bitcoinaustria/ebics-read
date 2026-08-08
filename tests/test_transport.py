@@ -6,17 +6,20 @@ import ssl
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.message import Message
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
 from ebics_read import (
     AmbiguousTransportError,
     HttpsTransport,
+    NegotiatedProtocol,
     OperationDeadlineError,
     OrderType,
     ProxyConfiguration,
     ResponseLimitError,
+    Subscriber,
+    TransientTransportError,
     TransportError,
 )
 from ebics_read.models import Bank
@@ -123,7 +126,103 @@ def test_default_transport_treats_interruption_as_ambiguous(
         HttpsTransport(clock=CLOCK).exchange(request, CONTROL)
 
 
-def test_only_fixed_hev_request_can_be_prepared() -> None:
+def test_ini_post_response_failures_are_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OpenedResponse(FakeResponse):
+        def __enter__(self) -> OpenedResponse:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class ResponseOpener:
+        def __init__(self, response: OpenedResponse) -> None:
+            self.response = response
+
+        def open(self, request: object, timeout: float) -> OpenedResponse:
+            return self.response
+
+    request = _PreparedTransportRequest._for_ini(
+        Bank("https://bank.invalid/ebics", "HOST", "Synthetic Bank AG"),
+        Subscriber("PARTNER", "USER"),
+        NegotiatedProtocol(),
+        b"synthetic certificate",
+    )
+
+    class BrokenTlsResponse(OpenedResponse):
+        def read(self, amount: int) -> bytes:
+            raise ssl.SSLError("synthetic TLS read failure")
+
+    responses = (
+        OpenedResponse(b"", "5"),
+        OpenedResponse(b"123", "4"),
+        BrokenTlsResponse(b"response"),
+    )
+    for response in responses:
+        monkeypatch.setattr(
+            "ebics_read.transport.build_opener",
+            lambda *handlers, response=response: ResponseOpener(response),
+        )
+        with pytest.raises(AmbiguousTransportError):
+            HttpsTransport(clock=CLOCK, max_response_bytes=4).exchange(request, CONTROL)
+
+    class HttpErrorOpener:
+        def open(self, request: object, timeout: float) -> object:
+            raise HTTPError(
+                "https://bank.invalid/ebics", 500, "synthetic", Message(), None
+            )
+
+    monkeypatch.setattr(
+        "ebics_read.transport.build_opener", lambda *handlers: HttpErrorOpener()
+    )
+    with pytest.raises(AmbiguousTransportError):
+        HttpsTransport(clock=CLOCK).exchange(request, CONTROL)
+
+    class TlsErrorOpener:
+        def open(self, request: object, timeout: float) -> object:
+            raise URLError(ssl.SSLError("synthetic handshake failure"))
+
+    monkeypatch.setattr(
+        "ebics_read.transport.build_opener", lambda *handlers: TlsErrorOpener()
+    )
+    with pytest.raises(AmbiguousTransportError):
+        HttpsTransport(clock=CLOCK).exchange(request, CONTROL)
+
+    class CertificateErrorOpener:
+        def open(self, request: object, timeout: float) -> object:
+            raise URLError(
+                ssl.SSLCertVerificationError(1, "synthetic verification failure")
+            )
+
+    monkeypatch.setattr(
+        "ebics_read.transport.build_opener",
+        lambda *handlers: CertificateErrorOpener(),
+    )
+    with pytest.raises(TransientTransportError):
+        HttpsTransport(clock=CLOCK).exchange(request, CONTROL)
+
+    @dataclass
+    class CancelAfterSend:
+        calls: int = 0
+        deadline: datetime = NOW + timedelta(seconds=5)
+
+        def raise_if_cancelled(self) -> None:
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("synthetic caller cancellation")
+
+    response = OpenedResponse(b"response")
+    monkeypatch.setattr(
+        "ebics_read.transport.build_opener",
+        lambda *handlers: ResponseOpener(response),
+    )
+    with pytest.raises(AmbiguousTransportError) as cancelled:
+        HttpsTransport(clock=CLOCK).exchange(request, CancelAfterSend())
+    assert isinstance(cancelled.value.__cause__, RuntimeError)
+
+
+def test_only_fixed_operation_specific_requests_can_be_prepared() -> None:
     bank = Bank("https://bank.invalid/ebics", "HOST")
     with pytest.raises(TypeError):
         _PreparedTransportRequest()
@@ -134,6 +233,11 @@ def test_only_fixed_hev_request_can_be_prepared() -> None:
     assert request.order is OrderType.HEV
     assert b"ebicsHEVRequest" in request.body
     assert b"BTU" not in request.body
+    ini_parameters = tuple(
+        inspect.signature(_PreparedTransportRequest._for_ini).parameters
+    )
+    assert ini_parameters == ("bank", "subscriber", "protocol", "certificate_der")
+    assert {"body", "xml", "order"}.isdisjoint(ini_parameters)
 
 
 def test_operation_control_bounds_each_exchange(

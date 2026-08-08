@@ -12,9 +12,7 @@ _AES_BLOCK_BYTES = 16
 _MAX_WRAPPED_KEY_BYTES = 2048  # 16384-bit maximum from the certificate profile.
 
 
-def unwrap_e002_transaction_key(
-    wrapped_key: bytes, key_provider: KeyProvider
-) -> bytes:
+def unwrap_e002_transaction_key(wrapped_key: bytes, key_provider: KeyProvider) -> bytes:
     """Unwrap one bounded E002 key and require the normative 128-bit result."""
 
     if (
@@ -49,8 +47,7 @@ def iter_decrypt_e002(
         pending += chunk
         process_length = max(
             0,
-            ((len(pending) - _AES_BLOCK_BYTES) // _AES_BLOCK_BYTES)
-            * _AES_BLOCK_BYTES,
+            ((len(pending) - _AES_BLOCK_BYTES) // _AES_BLOCK_BYTES) * _AES_BLOCK_BYTES,
         )
         if process_length:
             yield decryptor.update(pending[:process_length])

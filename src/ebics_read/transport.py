@@ -23,10 +23,11 @@ from .errors import (
     AmbiguousTransportError,
     OperationDeadlineError,
     ResponseLimitError,
+    TransientTransportError,
     TransportError,
 )
 from .interfaces import Clock, OperationControl
-from .models import Bank
+from .models import Bank, NegotiatedProtocol, Subscriber
 from .orders import OrderType
 
 _HEV_NAMESPACE = "http://www.ebics.org/H000"
@@ -82,6 +83,28 @@ class _PreparedTransportRequest:
         object.__setattr__(request, "bank", bank)
         object.__setattr__(request, "body", body)
         object.__setattr__(request, "order", OrderType.HEV)
+        return request
+
+    @classmethod
+    def _for_ini(
+        cls,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+        certificate_der: bytes,
+    ) -> _PreparedTransportRequest:
+        """Build the exact unsecured H005 INI request."""
+
+        from .ini import _build_ini_request_xml
+
+        request = object.__new__(cls)
+        object.__setattr__(request, "bank", bank)
+        object.__setattr__(
+            request,
+            "body",
+            _build_ini_request_xml(bank, subscriber, protocol, certificate_der),
+        )
+        object.__setattr__(request, "order", OrderType.INI)
         return request
 
 
@@ -179,24 +202,54 @@ class HttpsTransport:
                 result = TransportResponse(self._read_bounded(response, control))
                 self._remaining_timeout(control)
                 return result
-        except ResponseLimitError:
+        except AmbiguousTransportError:
             raise
-        except TransportError:
+        except ResponseLimitError as exc:
+            if request.order is OrderType.INI:
+                raise AmbiguousTransportError(
+                    "INI response exceeded its limit after possible delivery"
+                ) from exc
+            raise
+        except TransportError as exc:
+            if request.order is OrderType.INI:
+                raise AmbiguousTransportError(
+                    "INI response failed after possible delivery"
+                ) from exc
             raise
         except HTTPError as exc:
+            if request.order is OrderType.INI:
+                raise AmbiguousTransportError(
+                    "INI received HTTP error after possible delivery"
+                ) from exc
             raise TransportError("bank returned an HTTP error") from exc
         except URLError as exc:
+            if isinstance(exc.reason, ssl.SSLCertVerificationError):
+                raise TransientTransportError("HTTPS validation failed") from exc
             if isinstance(exc.reason, ssl.SSLError):
+                if request.order is OrderType.INI:
+                    raise AmbiguousTransportError(
+                        "INI TLS exchange failed after possible delivery"
+                    ) from exc
                 raise TransportError("HTTPS validation failed") from exc
             raise AmbiguousTransportError(
                 "HTTPS exchange ended with unknown delivery status"
             ) from exc
         except ssl.SSLError as exc:
+            if request.order is OrderType.INI:
+                raise AmbiguousTransportError(
+                    "INI TLS stream failed after possible delivery"
+                ) from exc
             raise TransportError("HTTPS exchange failed") from exc
         except (TimeoutError, OSError) as exc:
             raise AmbiguousTransportError(
                 "HTTPS exchange ended with unknown delivery status"
             ) from exc
+        except Exception as exc:
+            if request.order is OrderType.INI:
+                raise AmbiguousTransportError(
+                    "INI response handling ended after possible delivery"
+                ) from exc
+            raise
 
     def _read_bounded(self, response: HTTPResponse, control: OperationControl) -> bytes:
         declared = response.headers.get("Content-Length")

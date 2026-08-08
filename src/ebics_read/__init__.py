@@ -4,12 +4,14 @@ from .backend import EbicsBackend
 from .certificates import SelfSignedH005BankCertificateProfile
 from .client import ReadOnlyBackend, ReadOnlyClient
 from .errors import (
+    AmbiguousInitializationError,
     AmbiguousTransportError,
     BankKeyMismatchError,
     BankKeyNotTrustedError,
     CertificateValidationError,
     ConfigurationError,
     EbicsReadError,
+    EbicsReturnCodeError,
     OperationCancelledError,
     OperationDeadlineError,
     OperationNotImplementedError,
@@ -96,6 +98,7 @@ __all__ = [
     "AcceptedBankKeyIdentity",
     "AccountSelector",
     "AdvertisedBankUrl",
+    "AmbiguousInitializationError",
     "AmbiguousTransportError",
     "Bank",
     "BankCertificateProfile",
@@ -130,6 +133,7 @@ __all__ = [
     "EbicsBackend",
     "EbicsPublicKeyDigest",
     "EbicsReadError",
+    "EbicsReturnCodeError",
     "EbicsTransport",
     "HttpsTransport",
     "InitializationLetter",

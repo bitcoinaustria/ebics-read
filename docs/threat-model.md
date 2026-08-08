@@ -62,6 +62,13 @@ match the bank's out-of-band values.
   rejects mixed content, conflicting or duplicate advertisements, and never
   falls back to H004. Every subsequent backend call receives that exact
   negotiated protocol value.
+- INI accepts only a validated self-signed A006 signature certificate and emits
+  one fixed H005/S002 request with no nonce, X002, E002, caller order data, or
+  generic body input. Its intentionally unsigned response is TLS-only, requires
+  exact success and an order ID, and preserves known rejection codes. An
+  ambiguous attempt raises a non-retryable typed error carrying the exact
+  pending letter, which must not be submitted unless the bank confirms it
+  accepted that attempt.
 - Common H005 parsing distinguishes the fixed standard and key-management
   response roots, accepts only H005 with its schema-optional revision omitted or
   set to 1, requires authenticated markers, preserves
@@ -137,8 +144,11 @@ match the bank's out-of-band values.
 
 ## Adversarial agent review log
 
-No protocol-crypto review has occurred because XML signature verification is
-not implemented.
+X002, E002, and INI received focused review-only agent passes after
+implementation; these are agent reviews, not external human security audits.
+INI review findings on its clock boundary, one-message size limit, and exact
+protocol type, retry ambiguity, certificate profile, and letter identity were
+corrected before commit.
 
 On 2026-07-15, a separate fresh-context agent session that did not write the
 foundation was instructed to find breaks and not fix them. This was agent-only

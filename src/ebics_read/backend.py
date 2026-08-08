@@ -1,12 +1,21 @@
-"""Concrete protocol backend; currently only the complete HEV exchange exists."""
+"""Concrete fixed-operation protocol backend."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .errors import OperationNotImplementedError
+from .certificates import _validate_subscriber_signature_certificate
+from .errors import (
+    AmbiguousInitializationError,
+    ConfigurationError,
+    OperationNotImplementedError,
+    ResponseLimitError,
+    TransientTransportError,
+    TransportError,
+)
 from .hev import parse_hev_response
-from .interfaces import DocumentSink, OperationControl
+from .ini import _parse_ini_response, _render_ini_letter
+from .interfaces import Clock, DocumentSink, KeyProvider, KeyPurpose, OperationControl
 from .models import (
     Bank,
     BtfDescriptor,
@@ -30,6 +39,8 @@ class EbicsBackend:
 
     transport: EbicsTransport
     xml_limits: XmlLimits = field(default_factory=XmlLimits)
+    key_provider: KeyProvider | None = field(default=None, repr=False)
+    clock: Clock | None = field(default=None, repr=False)
 
     def probe_versions(self, bank: Bank, control: OperationControl) -> VersionDiscovery:
         request = _PreparedTransportRequest._for_hev(bank)
@@ -43,7 +54,27 @@ class EbicsBackend:
         protocol: NegotiatedProtocol,
         control: OperationControl,
     ) -> InitializationLetter:
-        raise OperationNotImplementedError("INI is not implemented")
+        if self.key_provider is None or self.clock is None:
+            raise ConfigurationError("INI requires a key provider and clock")
+        if bank.institution_name is None:
+            raise ConfigurationError("INI requires the recipient institution name")
+        processed_at = self.clock.now()
+        certificate_der = self.key_provider.certificate_der(KeyPurpose.SIGNATURE)
+        certificate = _validate_subscriber_signature_certificate(
+            certificate_der, processed_at
+        )
+        request = _PreparedTransportRequest._for_ini(
+            bank, subscriber, protocol, certificate_der
+        )
+        letter = _render_ini_letter(bank, subscriber, certificate, processed_at)
+        try:
+            response = self.transport.exchange(request, control)
+            _parse_ini_response(response.body, self.xml_limits)
+        except TransientTransportError:
+            raise
+        except (ResponseLimitError, TransportError) as exc:
+            raise AmbiguousInitializationError(letter) from exc
+        return letter
 
     def initialize_auth_encryption_keys(
         self,

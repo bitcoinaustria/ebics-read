@@ -30,5 +30,7 @@ All notable changes will be recorded here. The project has made no release.
 - Exact X002 response authentication using only explicitly pinned bank keys.
 - A key-provider surface without A006 business signing or generic crypto escape hatches.
 - Incremental fixed E002 decryption with validated transaction keys and padding.
+- Exact end-to-end H005 INI with strict A006 subscriber-certificate validation,
+  official-schema evidence, and deterministic initialization-letter data.
 - Architecture, threat-model, protocol-scope, key-lifecycle, interoperability,
   and clean-room source documentation.

@@ -2,12 +2,17 @@
 
 # ruff: noqa: E501 -- reviewed SHA-256 values stay contiguous for auditability.
 
+import base64
 import os
+import zlib
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
 from lxml import etree
+
+from ebics_read import Bank, NegotiatedProtocol, Subscriber
+from ebics_read.transport import _PreparedTransportRequest
 
 _OFFICIAL_SCHEMA_SHA256 = {
     "ebics_H005.xsd": "cf9d5d29fac0950f810c2a0018312fe476ab3415d804f5fc00cd4e3aa216136e",
@@ -61,6 +66,37 @@ def test_external_official_h005_and_s002_schema_sets_compile() -> None:
 
     assert etree.XMLSchema(etree.parse(directory / "ebics_H005.xsd", parser))
     assert etree.XMLSchema(etree.parse(directory / "ebics_signature_S002.xsd", parser))
+
+
+@pytest.mark.schema
+def test_generated_ini_matches_external_official_h005_and_s002_schemas() -> None:
+    directory = _official_schema_directory()
+    parser = etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        recover=False,
+        huge_tree=False,
+    )
+    request = _PreparedTransportRequest._for_ini(
+        Bank("https://bank.invalid/ebics", "HOST"),
+        Subscriber("PARTNER=1", "USER,1", "SYSTEM1"),
+        NegotiatedProtocol(),
+        b"synthetic-certificate",
+    )
+    outer = etree.fromstring(request.body, parser)
+    request_schema = etree.XMLSchema(
+        etree.parse(directory / "ebics_keymgmt_request_H005.xsd", parser)
+    )
+    request_schema.assertValid(outer)
+
+    encoded = outer.findtext(".//{urn:org:ebics:H005}OrderData")
+    assert encoded is not None
+    inner = etree.fromstring(zlib.decompress(base64.b64decode(encoded)), parser)
+    signature_schema = etree.XMLSchema(
+        etree.parse(directory / "ebics_signature_S002.xsd", parser)
+    )
+    signature_schema.assertValid(inner)
 
 
 def test_rejects_replacement_h005_schema_bundle(tmp_path: Path) -> None:
