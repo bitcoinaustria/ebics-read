@@ -21,9 +21,12 @@ from ebics_read import (
     ProtocolVersion,
     ServiceCapability,
     Subscriber,
+    TransactionId,
     UnsupportedProtocolVersionError,
     VersionDiscovery,
 )
+
+_TRANSACTION_ID = TransactionId("0123456789ABCDEF0123456789ABCDEF")
 
 
 def test_bank_requires_strict_https_endpoint() -> None:
@@ -41,10 +44,25 @@ def test_sensitive_models_hide_values_from_repr() -> None:
     bank = Bank("https://bank.invalid/ebics", "HOST-REPR")
     subscriber = Subscriber("PARTNER-REPR", "USER-REPR")
     account = AccountSelector(iban="AT611904300234573201")
+    transaction_id = TransactionId("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
     assert "bank.invalid" not in repr(bank)
     assert "HOST-REPR" not in repr(bank)
     assert "PARTNER-REPR" not in repr(subscriber)
     assert "AT611" not in repr(account)
+    assert "AAAAAAAA" not in repr(transaction_id)
+
+
+def test_transaction_ids_are_exact_typed_128_bit_values() -> None:
+    assert TransactionId.from_bytes(bytes(range(16))).value == (
+        "000102030405060708090A0B0C0D0E0F"
+    )
+    for invalid in ("transaction", "a" * 32, "A" * 31, "A" * 34):
+        with pytest.raises(ConfigurationError):
+            TransactionId(invalid)
+    with pytest.raises(ConfigurationError):
+        TransactionId.from_bytes(b"short")
+    with pytest.raises(TypeError):
+        TransactionId.from_bytes("not-bytes")  # type: ignore[arg-type]
 
 
 def test_btf_descriptor_supports_omitted_and_non_at_scopes() -> None:
@@ -88,7 +106,7 @@ def test_download_state_machine_rejects_skips_and_terminal_reuse() -> None:
     with pytest.raises(ConfigurationError):
         state.record_segment(1)
 
-    state = state.initialize(transaction_id="transaction", total_segments=2)
+    state = state.initialize(transaction_id=_TRANSACTION_ID, total_segments=2)
     with pytest.raises(ConfigurationError):
         state.record_segment(2)
     state = state.record_segment(1)
@@ -117,7 +135,7 @@ def test_download_state_cannot_be_forged_or_restored_incoherently() -> None:
         DownloadSession.restore(
             session_id="session",
             phase=DownloadPhase.COMPLETE,
-            transaction_id="transaction",
+            transaction_id=_TRANSACTION_ID,
             next_segment=1,
             total_segments=2,
             max_segments=2,
@@ -127,7 +145,7 @@ def test_download_state_cannot_be_forged_or_restored_incoherently() -> None:
         DownloadSession.restore(
             session_id="session",
             phase=DownloadPhase.INITIALIZED,
-            transaction_id="transaction",
+            transaction_id=_TRANSACTION_ID,
             next_segment=2,
             total_segments=3,
             max_segments=3,
@@ -135,13 +153,13 @@ def test_download_state_cannot_be_forged_or_restored_incoherently() -> None:
         )
     with pytest.raises(ConfigurationError):
         DownloadSession.start("session", ProtocolLimits(max_segments=1)).initialize(
-            transaction_id="transaction", total_segments=2
+            transaction_id=_TRANSACTION_ID, total_segments=2
         )
 
 
 def test_negative_receipt_and_ambiguous_receipt_are_explicit() -> None:
     state = DownloadSession.start("session", ProtocolLimits(max_segments=1))
-    state = state.initialize(transaction_id="transaction", total_segments=1)
+    state = state.initialize(transaction_id=_TRANSACTION_ID, total_segments=1)
     state = state.record_segment(1)
     negative = state.mark_negative_receipt_sent()
     ambiguous = negative.mark_receipt_ambiguous()

@@ -93,8 +93,12 @@ match the bank's out-of-band values.
 - Select exactly the authenticated nodes required by the normative XPointer;
   reject wrapping, namespace substitution, missing nodes, and duplicates.
 - Reject unknown algorithms and return codes.
-- Track nonces, request IDs, timestamps, transaction IDs, and completed receipts
-  to detect replay.
+- Generate a fresh 128-bit nonce and timestamp for every signed initial request;
+  treat `EBICS_TX_MESSAGE_REPLAY` as a security failure rather than silently
+  retrying it.
+- Atomically claim every authenticated bank transaction ID through the
+  persistent session store in the same operation that records initialized
+  state. Retain claims after completed, failed, or ambiguous outcomes.
 - Enforce segment count/order/completeness, compressed and decompressed sizes,
   ZIP members, member paths, member sizes, and compression ratios.
 - Apply phase-specific handling of ambiguous transport outcomes in the future

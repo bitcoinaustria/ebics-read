@@ -44,7 +44,7 @@ class CertificateValidationError(SecurityError):
 
 
 class ReplayError(SecurityError):
-    """Raised for duplicate identifiers, nonces, or replayed responses."""
+    """Raised for a replayed bank transaction or authenticated message."""
 
 
 class XmlSecurityError(SecurityError):

@@ -220,13 +220,37 @@ class ReceiptKind(str, Enum):
     NEGATIVE = "negative"
 
 
+@dataclass(frozen=True, slots=True)
+class TransactionId:
+    """One exact, sensitive 128-bit bank transaction identifier."""
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.value, str)
+            or re.fullmatch(r"[0-9A-F]{32}", self.value) is None
+        ):
+            raise ConfigurationError(
+                "transaction ID must be 16 bytes in uppercase hexadecimal"
+            )
+
+    @classmethod
+    def from_bytes(cls, value: bytes) -> TransactionId:
+        if not isinstance(value, bytes):
+            raise TypeError("transaction ID bytes must be bytes")
+        if len(value) != 16:
+            raise ConfigurationError("transaction ID must contain exactly 16 bytes")
+        return cls(value.hex().upper())
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class DownloadSession:
     """Immutable BTD state constructible only through validated transitions."""
 
     session_id: str = field(repr=False, init=False)
     phase: DownloadPhase = field(init=False)
-    transaction_id: str | None = field(default=None, repr=False)
+    transaction_id: TransactionId | None = field(default=None, repr=False)
     next_segment: int = field(init=False)
     total_segments: int | None = field(init=False)
     max_segments: int = field(init=False)
@@ -237,7 +261,7 @@ class DownloadSession:
         self,
         session_id: str,
         phase: DownloadPhase,
-        transaction_id: str | None,
+        transaction_id: TransactionId | None,
         next_segment: int,
         total_segments: int | None,
         max_segments: int,
@@ -259,8 +283,10 @@ class DownloadSession:
         _require_identifier("session_id", self.session_id)
         if not isinstance(self.phase, DownloadPhase):
             raise TypeError("phase must be a DownloadPhase")
-        if self.transaction_id is not None:
-            _require_identifier("transaction_id", self.transaction_id)
+        if self.transaction_id is not None and not isinstance(
+            self.transaction_id, TransactionId
+        ):
+            raise TypeError("transaction_id must be a TransactionId")
         if type(self.next_segment) is not int:
             raise TypeError("next_segment must be an integer")
         if self.next_segment <= 0:
@@ -289,7 +315,7 @@ class DownloadSession:
         cls,
         session_id: str,
         phase: DownloadPhase,
-        transaction_id: str | None,
+        transaction_id: TransactionId | None,
         next_segment: int,
         total_segments: int | None,
         max_segments: int,
@@ -331,7 +357,7 @@ class DownloadSession:
         *,
         session_id: str,
         phase: DownloadPhase,
-        transaction_id: str | None,
+        transaction_id: TransactionId | None,
         next_segment: int,
         total_segments: int | None,
         max_segments: int,
@@ -352,7 +378,7 @@ class DownloadSession:
         )
 
     def initialize(
-        self, *, transaction_id: str, total_segments: int
+        self, *, transaction_id: TransactionId, total_segments: int
     ) -> DownloadSession:
         """Accept authenticated initialization metadata."""
 

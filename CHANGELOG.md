@@ -23,5 +23,6 @@ All notable changes will be recorded here. The project has made no release.
   typed certificate fingerprints, EBICS public-key digests, and OOB identities.
 - Explicit BTD receipt states plus leased resumable-state, protected-segment,
   streaming document-sink, provenance, deadline, cancellation, and retry seams.
+- Exact typed 128-bit transaction IDs and a persistent atomic replay-claim seam.
 - Architecture, threat-model, protocol-scope, key-lifecycle, interoperability,
   and clean-room source documentation.

@@ -12,11 +12,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from .certificates import SelfSignedH005BankCertificateProfile
-from .errors import BankKeyNotTrustedError, SessionConflictError
+from .errors import BankKeyNotTrustedError, ReplayError, SessionConflictError
 from .models import (
     AcceptedBankKeyIdentity,
     Bank,
     BankKeyRole,
+    DownloadPhase,
     DownloadSession,
     SegmentReference,
     SessionLease,
@@ -98,6 +99,7 @@ class InMemorySessionStore:
     _leases: dict[str, SessionLease] = field(
         default_factory=dict, init=False, repr=False
     )
+    _transaction_claims: set[str] = field(default_factory=set, init=False, repr=False)
 
     def acquire_lease(
         self, session_id: str, owner_token: bytes, expires_at: datetime
@@ -123,12 +125,48 @@ class InMemorySessionStore:
         if state.session_id != lease.session_id:
             raise SessionConflictError("state belongs to another session")
         current = self._states.get(lease.session_id)
+        current_transaction_id = None if current is None else current.transaction_id
+        if state.transaction_id != current_transaction_id:
+            raise SessionConflictError(
+                "generic state update cannot change the bank transaction ID"
+            )
         current_revision = None if current is None else current.revision
         if current_revision != expected_revision:
             return False
         required_revision = 0 if current is None else current.revision + 1
         if state.revision != required_revision:
             raise SessionConflictError("state revision does not advance exactly once")
+        self._states[lease.session_id] = state
+        return True
+
+    def initialize_transaction(
+        self,
+        lease: SessionLease,
+        expected_revision: int,
+        state: DownloadSession,
+    ) -> bool:
+        self._require_lease(lease)
+        if (
+            state.session_id != lease.session_id
+            or state.phase is not DownloadPhase.INITIALIZED
+            or state.transaction_id is None
+            or state.total_segments is None
+        ):
+            raise SessionConflictError("state is not a transaction initialization")
+        current = self._states.get(lease.session_id)
+        if current is None or current.revision != expected_revision:
+            return False
+        expected_state = current.initialize(
+            transaction_id=state.transaction_id,
+            total_segments=state.total_segments,
+        )
+        if state != expected_state:
+            raise SessionConflictError(
+                "state is not the exact initialization transition"
+            )
+        if state.transaction_id.value in self._transaction_claims:
+            raise ReplayError("bank transaction ID was already claimed")
+        self._transaction_claims.add(state.transaction_id.value)
         self._states[lease.session_id] = state
         return True
 

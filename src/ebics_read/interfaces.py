@@ -92,7 +92,19 @@ class SessionStore(Protocol):
         expected_revision: int | None,
         state: DownloadSession,
     ) -> bool:
-        """Atomically store only when ownership and revision still match."""
+        """Atomically store a non-initialization transition at the expected revision."""
+
+    def initialize_transaction(
+        self,
+        lease: SessionLease,
+        expected_revision: int,
+        state: DownloadSession,
+    ) -> bool:
+        """Atomically claim a new bank transaction ID and persist initialized state.
+
+        Every duplicate ID fails as replay. The global claim remains after deletion;
+        ``False`` means the revision no longer matches.
+        """
 
     def delete(self, lease: SessionLease, expected_revision: int) -> bool:
         """Atomically remove completed or invalidated state."""

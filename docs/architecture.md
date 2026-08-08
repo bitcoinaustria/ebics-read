@@ -34,8 +34,8 @@ expose generic XML or order execution through `ReadOnlyClient`.
 
 `ReadOnlyClient` depends on the typed `ReadOnlyBackend` contract and a
 `BankKeyTrustStore`. A backend may depend on `EbicsTransport`, `KeyProvider`,
-`Clock`, `NonceSource`, and `SessionStore`. Hosts implement or adapt those
-protocols. The protocol core never reaches into host storage.
+`Clock`, `NonceSource`, `SessionStore`, and `SegmentStore`. Hosts implement or
+adapt those protocols. The protocol core never reaches into host storage.
 
 `lxml` is selected because it exposes the
 libxml2 controls needed to disable entity resolution, DTD loading, network
@@ -77,6 +77,13 @@ Initialization and downloads are separate workflows:
    `accept_bank_keys()`.
 6. `discover_capabilities()` defensively tries supported HPD/HAA/HKD/HTD paths.
 7. `download()` performs BTD only after the trust store yields `TrustedBankKeys`.
+
+An authenticated 128-bit bank transaction ID is represented by `TransactionId`
+and globally claimed in the same atomic `SessionStore.initialize_transaction()`
+operation that persists initialized session state. Every duplicate fails as a
+replay, and claims remain after terminal or completed sessions. There is no
+claim-before-persist crash window and endpoint changes do not create a new replay
+namespace.
 
 Downloaded HPB keys never become trusted as a side effect of network activity.
 Every operation after HEV receives an exact immutable `NegotiatedProtocol` from
