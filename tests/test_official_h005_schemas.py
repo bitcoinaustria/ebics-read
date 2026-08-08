@@ -19,6 +19,7 @@ from test_haa import _discover as _discover_haa
 from test_haa import _order_data as _haa_order_data
 from test_haa import _response as _haa_response
 from test_haa import _setup as _setup_haa
+from test_hkd import _order_data as _hkd_order_data
 from test_hpd import _discover as _discover_hpd
 from test_hpd import _order_data as _hpd_order_data
 from test_hpd import _setup as _setup_hpd
@@ -367,6 +368,21 @@ def test_generated_hpd_transaction_matches_external_official_h005_schemas() -> N
     etree.XMLSchema(
         etree.parse(directory / "ebics_orders_H005.xsd", parser)
     ).assertValid(etree.fromstring(_hpd_order_data(), parser))
+
+
+@pytest.mark.schema
+def test_synthetic_hkd_order_data_matches_external_official_h005_schema() -> None:
+    directory = _official_schema_directory()
+    parser = etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        recover=False,
+        huge_tree=False,
+    )
+    etree.XMLSchema(
+        etree.parse(directory / "ebics_orders_H005.xsd", parser)
+    ).assertValid(etree.fromstring(_hkd_order_data(), parser))
 
 
 def test_rejects_replacement_h005_schema_bundle(tmp_path: Path) -> None:

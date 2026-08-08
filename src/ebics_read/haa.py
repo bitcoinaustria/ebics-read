@@ -604,6 +604,10 @@ def _parse_haa_services(root: etree._Element) -> tuple[ServiceCapability, ...]:
 
 
 def _parse_service(element: etree._Element) -> ServiceCapability:
+    return ServiceCapability(_parse_btf_descriptor(element), OrderType.HAA)
+
+
+def _parse_btf_descriptor(element: etree._Element) -> BtfDescriptor:
     if element.attrib or (element.text is not None and element.text.strip()):
         raise XmlSecurityError("HAA service contains unexpected content")
     children = list(element)
@@ -650,18 +654,15 @@ def _parse_service(element: etree._Element) -> ServiceCapability:
     version = _optional_attribute(message, "version", _NUMBER)
     variant = _optional_attribute(message, "variant", _NUMBER)
     format_value = _optional_attribute(message, "format", _FORMAT)
-    return ServiceCapability(
-        BtfDescriptor(
-            service_name=service_name,
-            message_name=message_name,
-            message_version=version,
-            variant=variant,
-            format=format_value,
-            service_option=service_option[0],
-            container_type=container_type,
-            scope=scope[0],
-        ),
-        OrderType.HAA,
+    return BtfDescriptor(
+        service_name=service_name,
+        message_name=message_name,
+        message_version=version,
+        variant=variant,
+        format=format_value,
+        service_option=service_option[0],
+        container_type=container_type,
+        scope=scope[0],
     )
 
 
