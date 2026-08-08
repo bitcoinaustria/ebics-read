@@ -69,6 +69,10 @@ match the bank's out-of-band values.
   ambiguous attempt raises a non-retryable typed error carrying the exact
   pending letter, which must not be submitted unless the bank confirms it
   accepted that attempt.
+- HIA applies the same unsigned-response and ambiguity controls to fixed X002
+  authentication and E002 encryption certificates. It allows their normative
+  dual-use key case but rejects either role reusing the A006 signature key, and
+  exposes no caller-controlled XML, version, or order field.
 - Common H005 parsing distinguishes the fixed standard and key-management
   response roots, accepts only H005 with its schema-optional revision omitted or
   set to 1, requires authenticated markers, preserves
@@ -144,11 +148,13 @@ match the bank's out-of-band values.
 
 ## Adversarial agent review log
 
-X002, E002, and INI received focused review-only agent passes after
+X002, E002, INI, and HIA received focused review-only agent passes after
 implementation; these are agent reviews, not external human security audits.
 INI review findings on its clock boundary, one-message size limit, and exact
 protocol type, retry ambiguity, certificate profile, and letter identity were
 corrected before commit.
+HIA review findings on duplicate-key semantics, retry coverage, E002 common
+name, and role documentation were corrected before commit.
 
 On 2026-07-15, a separate fresh-context agent session that did not write the
 foundation was instructed to find breaks and not fix them. This was agent-only

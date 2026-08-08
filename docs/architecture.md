@@ -15,7 +15,7 @@ interoperability has been demonstrated.
 | Module | Responsibility |
 | --- | --- |
 | `client` | Explicit HEV, INI, HIA, HPB, discovery, trust acceptance, and BTD facade |
-| `backend` | Concrete fixed-operation engine; currently connects HEV and INI |
+| `backend` | Concrete fixed-operation engine; currently connects HEV, INI, and HIA |
 | `models` | Immutable, bounded configuration, descriptor, capability, key, and result values |
 | `orders` | Complete fixed allowlist; no generic order constructor |
 | `interfaces` | Injected keys, bank trust, clock, nonce, leased state, segment spool, streaming sink, and operation-control boundaries |
@@ -23,6 +23,7 @@ interoperability has been demonstrated.
 | `xml` | Hardened untrusted-XML boundary; no protocol-specific interpretation |
 | `hev` | Exact H000 response parsing and H005/03.00 selection input |
 | `h005` | Fixed common response shapes and contextual return-code allowlists |
+| `hia` | Exact unsecured HIA request data and two-certificate letter rendering |
 | `x002` | Exact authenticated-node digest and pinned-bank RSA verification |
 | `e002` | Fixed incremental AES-128-CBC order-data decryption |
 | `ini` | Exact unsecured INI request data, response checks, and letter rendering |
@@ -60,15 +61,16 @@ primitive. These are the only runtime dependencies.
 The transport protocol receives only a read-only request view plus the
 whole-operation control. The default transport accepts only the protocol core's
 private prepared request type. There is no factory that accepts caller XML or an
-order argument: the current builders construct only exact HEV/H000 and INI/H005
-requests. Future operations require equally specific fixed-shape builders.
+order argument: the current builders construct only exact HEV/H000, INI/H005,
+and HIA/H005 requests. Future operations require equally specific fixed-shape
+builders.
 
-`EbicsBackend` completes HEV and INI as fixed vertical slices. INI requests only
-the provider's signature certificate, validates the self-signed A006 profile,
-emits the exact compressed unsecured request, accepts the deliberately unsigned
-response only through verified TLS, and returns deterministic letter data.
-The client performs mandatory HEV negotiation first; missing INI dependencies
-are then rejected before any INI request is sent.
+`EbicsBackend` completes HEV, INI, and HIA as fixed vertical slices. INI and HIA
+request only fixed provider certificate roles, validate their self-signed
+profiles, emit exact compressed unsecured requests, accept deliberately unsigned
+responses only through verified TLS, and return deterministic letter data.
+The client performs mandatory HEV negotiation first; missing INI/HIA
+dependencies are then rejected before any initialization request is sent.
 Remaining backend operations fail with a typed not-implemented error.
 
 ## Operation state

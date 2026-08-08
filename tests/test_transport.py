@@ -126,7 +126,7 @@ def test_default_transport_treats_interruption_as_ambiguous(
         HttpsTransport(clock=CLOCK).exchange(request, CONTROL)
 
 
-def test_ini_post_response_failures_are_ambiguous(
+def test_initialization_post_response_failures_are_ambiguous(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class OpenedResponse(FakeResponse):
@@ -149,23 +149,32 @@ def test_ini_post_response_failures_are_ambiguous(
         NegotiatedProtocol(),
         b"synthetic certificate",
     )
+    hia_request = _PreparedTransportRequest._for_hia(
+        Bank("https://bank.invalid/ebics", "HOST", "Synthetic Bank AG"),
+        Subscriber("PARTNER", "USER"),
+        NegotiatedProtocol(),
+        b"synthetic authentication certificate",
+        b"synthetic encryption certificate",
+    )
 
     class BrokenTlsResponse(OpenedResponse):
         def read(self, amount: int) -> bytes:
             raise ssl.SSLError("synthetic TLS read failure")
 
-    responses = (
-        OpenedResponse(b"", "5"),
-        OpenedResponse(b"123", "4"),
-        BrokenTlsResponse(b"response"),
-    )
-    for response in responses:
-        monkeypatch.setattr(
-            "ebics_read.transport.build_opener",
-            lambda *handlers, response=response: ResponseOpener(response),
-        )
-        with pytest.raises(AmbiguousTransportError):
-            HttpsTransport(clock=CLOCK, max_response_bytes=4).exchange(request, CONTROL)
+    for current_request in (request, hia_request):
+        for response in (
+            OpenedResponse(b"", "5"),
+            OpenedResponse(b"123", "4"),
+            BrokenTlsResponse(b"response"),
+        ):
+            monkeypatch.setattr(
+                "ebics_read.transport.build_opener",
+                lambda *handlers, response=response: ResponseOpener(response),
+            )
+            with pytest.raises(AmbiguousTransportError):
+                HttpsTransport(clock=CLOCK, max_response_bytes=4).exchange(
+                    current_request, CONTROL
+                )
 
     class HttpErrorOpener:
         def open(self, request: object, timeout: float) -> object:
@@ -176,8 +185,9 @@ def test_ini_post_response_failures_are_ambiguous(
     monkeypatch.setattr(
         "ebics_read.transport.build_opener", lambda *handlers: HttpErrorOpener()
     )
-    with pytest.raises(AmbiguousTransportError):
-        HttpsTransport(clock=CLOCK).exchange(request, CONTROL)
+    for current_request in (request, hia_request):
+        with pytest.raises(AmbiguousTransportError):
+            HttpsTransport(clock=CLOCK).exchange(current_request, CONTROL)
 
     class TlsErrorOpener:
         def open(self, request: object, timeout: float) -> object:
@@ -186,8 +196,9 @@ def test_ini_post_response_failures_are_ambiguous(
     monkeypatch.setattr(
         "ebics_read.transport.build_opener", lambda *handlers: TlsErrorOpener()
     )
-    with pytest.raises(AmbiguousTransportError):
-        HttpsTransport(clock=CLOCK).exchange(request, CONTROL)
+    for current_request in (request, hia_request):
+        with pytest.raises(AmbiguousTransportError):
+            HttpsTransport(clock=CLOCK).exchange(current_request, CONTROL)
 
     class CertificateErrorOpener:
         def open(self, request: object, timeout: float) -> object:
@@ -199,8 +210,9 @@ def test_ini_post_response_failures_are_ambiguous(
         "ebics_read.transport.build_opener",
         lambda *handlers: CertificateErrorOpener(),
     )
-    with pytest.raises(TransientTransportError):
-        HttpsTransport(clock=CLOCK).exchange(request, CONTROL)
+    for current_request in (request, hia_request):
+        with pytest.raises(TransientTransportError):
+            HttpsTransport(clock=CLOCK).exchange(current_request, CONTROL)
 
     @dataclass
     class CancelAfterSend:
@@ -212,14 +224,15 @@ def test_ini_post_response_failures_are_ambiguous(
             if self.calls > 1:
                 raise RuntimeError("synthetic caller cancellation")
 
-    response = OpenedResponse(b"response")
-    monkeypatch.setattr(
-        "ebics_read.transport.build_opener",
-        lambda *handlers: ResponseOpener(response),
-    )
-    with pytest.raises(AmbiguousTransportError) as cancelled:
-        HttpsTransport(clock=CLOCK).exchange(request, CancelAfterSend())
-    assert isinstance(cancelled.value.__cause__, RuntimeError)
+    for current_request in (request, hia_request):
+        response = OpenedResponse(b"response")
+        monkeypatch.setattr(
+            "ebics_read.transport.build_opener",
+            lambda *handlers, response=response: ResponseOpener(response),
+        )
+        with pytest.raises(AmbiguousTransportError) as cancelled:
+            HttpsTransport(clock=CLOCK).exchange(current_request, CancelAfterSend())
+        assert isinstance(cancelled.value.__cause__, RuntimeError)
 
 
 def test_only_fixed_operation_specific_requests_can_be_prepared() -> None:
@@ -238,6 +251,17 @@ def test_only_fixed_operation_specific_requests_can_be_prepared() -> None:
     )
     assert ini_parameters == ("bank", "subscriber", "protocol", "certificate_der")
     assert {"body", "xml", "order"}.isdisjoint(ini_parameters)
+    hia_parameters = tuple(
+        inspect.signature(_PreparedTransportRequest._for_hia).parameters
+    )
+    assert hia_parameters == (
+        "bank",
+        "subscriber",
+        "protocol",
+        "authentication_certificate_der",
+        "encryption_certificate_der",
+    )
+    assert {"body", "xml", "order"}.isdisjoint(hia_parameters)
 
 
 def test_operation_control_bounds_each_exchange(

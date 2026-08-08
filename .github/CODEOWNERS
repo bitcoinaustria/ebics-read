@@ -4,6 +4,7 @@
 /src/ebics_read/e002.py @tobomobo
 /src/ebics_read/h005.py @tobomobo
 /src/ebics_read/hev.py @tobomobo
+/src/ebics_read/hia.py @tobomobo
 /src/ebics_read/ini.py @tobomobo
 /src/ebics_read/interfaces.py @tobomobo
 /src/ebics_read/models.py @tobomobo

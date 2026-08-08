@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import ExtensionOID, NameOID, SignatureAlgorithmOID
 
 from .errors import CertificateValidationError
+from .interfaces import KeyPurpose
 from .models import (
     _CERTIFICATE_VALIDATION_TOKEN,
     BankKeyRole,
@@ -27,6 +28,49 @@ def _validate_subscriber_signature_certificate(
     certificate_der: bytes, now: datetime
 ) -> x509.Certificate:
     """Validate the fixed self-signed H005/A006 subscriber profile."""
+
+    return _validate_self_signed_subscriber_certificate(
+        certificate_der, now, KeyPurpose.SIGNATURE
+    )
+
+
+def _validate_subscriber_authentication_encryption_certificates(
+    signature_certificate_der: bytes,
+    authentication_certificate_der: bytes,
+    encryption_certificate_der: bytes,
+    now: datetime,
+) -> tuple[x509.Certificate, x509.Certificate]:
+    """Validate the fixed self-signed H005/X002 and H005/E002 profiles."""
+
+    signature = _validate_self_signed_subscriber_certificate(
+        signature_certificate_der, now, KeyPurpose.SIGNATURE
+    )
+    authentication = _validate_self_signed_subscriber_certificate(
+        authentication_certificate_der, now, KeyPurpose.AUTHENTICATION
+    )
+    encryption = _validate_self_signed_subscriber_certificate(
+        encryption_certificate_der, now, KeyPurpose.ENCRYPTION
+    )
+    signature_key = signature.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    for certificate in (authentication, encryption):
+        compared_key = certificate.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        if hmac.compare_digest(signature_key, compared_key):
+            raise CertificateValidationError(
+                "signature and transport certificates require different RSA keys"
+            )
+    return authentication, encryption
+
+
+def _validate_self_signed_subscriber_certificate(
+    certificate_der: bytes, now: datetime, purpose: KeyPurpose
+) -> x509.Certificate:
+    """Validate one fixed self-signed H005 subscriber certificate."""
 
     if type(certificate_der) is not bytes or not certificate_der:
         raise CertificateValidationError("subscriber certificate must be DER bytes")
@@ -46,6 +90,13 @@ def _validate_subscriber_signature_certificate(
         raise CertificateValidationError(
             "v1 subscriber profile requires a self-signed subject"
         )
+    if (
+        purpose is KeyPurpose.ENCRYPTION
+        and not certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    ):
+        raise CertificateValidationError(
+            "subscriber encryption certificate requires a common name"
+        )
     if certificate.signature_algorithm_oid != SignatureAlgorithmOID.RSA_WITH_SHA256:
         raise CertificateValidationError(
             "subscriber certificate must use RSA with SHA-256"
@@ -57,12 +108,14 @@ def _validate_subscriber_signature_certificate(
     public_key = certificate.public_key()
     if not isinstance(public_key, rsa.RSAPublicKey):
         raise CertificateValidationError("subscriber certificate key must be RSA")
-    if not 2048 <= public_key.key_size <= 4096:
-        raise CertificateValidationError("A006 RSA key size must be 2048 to 4096 bits")
-    if certificate.serial_number.bit_length() > 160:
+    maximum_key_size = 4096 if purpose is KeyPurpose.SIGNATURE else 16384
+    if not 2048 <= public_key.key_size <= maximum_key_size:
         raise CertificateValidationError(
-            "self-signed subscriber serial exceeds 20 bytes"
+            "subscriber RSA key size is outside H005 limits"
         )
+    maximum_serial_bits = 280 if purpose is KeyPurpose.ENCRYPTION else 160
+    if certificate.serial_number.bit_length() > maximum_serial_bits:
+        raise CertificateValidationError("self-signed subscriber serial is too long")
     if not certificate.not_valid_before_utc <= now <= certificate.not_valid_after_utc:
         raise CertificateValidationError(
             "subscriber certificate is not currently valid"
@@ -114,9 +167,16 @@ def _validate_subscriber_signature_certificate(
             "subscriber authority certificate identity is inconsistent"
         )
     key_usage = SelfSignedH005BankCertificateProfile._key_usage(certificate)
-    if not key_usage.content_commitment:
+    valid_usage = (
+        key_usage.content_commitment
+        if purpose is KeyPurpose.SIGNATURE
+        else key_usage.digital_signature
+        if purpose is KeyPurpose.AUTHENTICATION
+        else key_usage.key_encipherment or key_usage.key_agreement
+    )
+    if not valid_usage:
         raise CertificateValidationError(
-            "A006 certificate requires contentCommitment key usage"
+            f"subscriber {purpose.value} certificate has the wrong key usage"
         )
     for oid in (
         ExtensionOID.EXTENDED_KEY_USAGE,

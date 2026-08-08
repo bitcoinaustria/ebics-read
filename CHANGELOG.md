@@ -32,5 +32,7 @@ All notable changes will be recorded here. The project has made no release.
 - Incremental fixed E002 decryption with validated transaction keys and padding.
 - Exact end-to-end H005 INI with strict A006 subscriber-certificate validation,
   official-schema evidence, and deterministic initialization-letter data.
+- Exact end-to-end H005 HIA with strict X002/E002 subscriber-certificate
+  validation and two-certificate initialization-letter data.
 - Architecture, threat-model, protocol-scope, key-lifecycle, interoperability,
   and clean-room source documentation.

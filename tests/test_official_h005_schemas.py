@@ -99,6 +99,54 @@ def test_generated_ini_matches_external_official_h005_and_s002_schemas() -> None
     signature_schema.assertValid(inner)
 
 
+@pytest.mark.schema
+def test_generated_hia_matches_external_official_h005_schemas() -> None:
+    directory = _official_schema_directory()
+    parser = etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        recover=False,
+        huge_tree=False,
+    )
+    authentication_der = b"synthetic authentication certificate"
+    encryption_der = b"synthetic encryption certificate"
+    request = _PreparedTransportRequest._for_hia(
+        Bank("https://bank.invalid/ebics", "HOST"),
+        Subscriber("PARTNER=1", "USER,1", "SYSTEM1"),
+        NegotiatedProtocol(),
+        authentication_der,
+        encryption_der,
+    )
+    outer = etree.fromstring(request.body, parser)
+    etree.XMLSchema(
+        etree.parse(directory / "ebics_keymgmt_request_H005.xsd", parser)
+    ).assertValid(outer)
+    assert outer.findtext(".//{urn:org:ebics:H005}AdminOrderType") == "HIA"
+    assert outer.findtext(".//{urn:org:ebics:H005}SecurityMedium") == "0000"
+    assert not outer.xpath("//*[local-name()='Nonce' or local-name()='Timestamp']")
+
+    encoded = outer.findtext(".//{urn:org:ebics:H005}OrderData")
+    assert encoded is not None
+    inner = etree.fromstring(
+        zlib.decompress(base64.b64decode(encoded, validate=True)), parser
+    )
+    etree.XMLSchema(
+        etree.parse(directory / "ebics_orders_H005.xsd", parser)
+    ).assertValid(inner)
+    assert inner.findtext(".//{urn:org:ebics:H005}AuthenticationVersion") == "X002"
+    assert inner.findtext(".//{urn:org:ebics:H005}EncryptionVersion") == "E002"
+    certificates = inner.findall(
+        ".//{http://www.w3.org/2000/09/xmldsig#}X509Certificate"
+    )
+    assert [
+        base64.b64decode(value.text or "", validate=True) for value in certificates
+    ] == [
+        authentication_der,
+        encryption_der,
+    ]
+
+
 def test_rejects_replacement_h005_schema_bundle(tmp_path: Path) -> None:
     for name in _OFFICIAL_SCHEMA_SHA256:
         (tmp_path / name).write_bytes(b"<not-the-reviewed-schema/>")

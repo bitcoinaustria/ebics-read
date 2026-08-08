@@ -1,4 +1,4 @@
-"""Exact H005 INI request data, response checks, and letter rendering."""
+"""Exact H005 INI request data, key-initialization response, and letter."""
 
 from __future__ import annotations
 
@@ -105,18 +105,20 @@ def _build_ini_request_xml(
     return etree.tostring(root, encoding="UTF-8", xml_declaration=True)
 
 
-def _parse_ini_response(response_xml: bytes, limits: XmlLimits) -> None:
+def _parse_key_initialization_response(response_xml: bytes, limits: XmlLimits) -> None:
     try:
         parsed = parse_h005_response(response_xml, key_management=True, limits=limits)
     except ProtocolError as exc:
-        raise AmbiguousTransportError("INI outcome is ambiguous") from exc
+        raise AmbiguousTransportError(
+            "key initialization outcome is ambiguous"
+        ) from exc
     if any(child.tag == f"{{{H005_NAMESPACE}}}DataTransfer" for child in parsed.body):
-        raise AmbiguousTransportError("INI outcome is ambiguous")
+        raise AmbiguousTransportError("key initialization outcome is ambiguous")
     if (
         parsed.return_codes.technical != "000000"
         and parsed.return_codes.business != "000000"
     ):
-        raise AmbiguousTransportError("INI outcome is ambiguous")
+        raise AmbiguousTransportError("key initialization outcome is ambiguous")
     if (
         parsed.return_codes.technical != "000000"
         or parsed.return_codes.business != "000000"
@@ -126,7 +128,7 @@ def _parse_ini_response(response_xml: bytes, limits: XmlLimits) -> None:
         )
     mutable = list(parsed.header)[1]
     if not any(child.tag == f"{{{H005_NAMESPACE}}}OrderID" for child in mutable):
-        raise AmbiguousTransportError("INI outcome is ambiguous")
+        raise AmbiguousTransportError("key initialization outcome is ambiguous")
 
 
 def _render_ini_letter(

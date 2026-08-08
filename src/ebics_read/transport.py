@@ -107,6 +107,35 @@ class _PreparedTransportRequest:
         object.__setattr__(request, "order", OrderType.INI)
         return request
 
+    @classmethod
+    def _for_hia(
+        cls,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+        authentication_certificate_der: bytes,
+        encryption_certificate_der: bytes,
+    ) -> _PreparedTransportRequest:
+        """Build the exact unsecured H005 HIA request."""
+
+        from .hia import _build_hia_request_xml
+
+        request = object.__new__(cls)
+        object.__setattr__(request, "bank", bank)
+        object.__setattr__(
+            request,
+            "body",
+            _build_hia_request_xml(
+                bank,
+                subscriber,
+                protocol,
+                authentication_certificate_der,
+                encryption_certificate_der,
+            ),
+        )
+        object.__setattr__(request, "order", OrderType.HIA)
+        return request
+
 
 class EbicsTransport(Protocol):
     """Injected HTTP exchange for internally constructed EBICS envelopes."""
@@ -197,6 +226,7 @@ class HttpsTransport:
             _RejectRedirects(),
             HTTPSHandler(context=self._ssl_context),
         )
+        initialization = request.order in {OrderType.INI, OrderType.HIA}
         try:
             with opener.open(http_request, timeout=timeout) as response:
                 result = TransportResponse(self._read_bounded(response, control))
@@ -205,39 +235,40 @@ class HttpsTransport:
         except AmbiguousTransportError:
             raise
         except ResponseLimitError as exc:
-            if request.order is OrderType.INI:
+            if initialization:
                 raise AmbiguousTransportError(
-                    "INI response exceeded its limit after possible delivery"
+                    "key initialization response exceeded its limit after possible "
+                    "delivery"
                 ) from exc
             raise
         except TransportError as exc:
-            if request.order is OrderType.INI:
+            if initialization:
                 raise AmbiguousTransportError(
-                    "INI response failed after possible delivery"
+                    "key initialization response failed after possible delivery"
                 ) from exc
             raise
         except HTTPError as exc:
-            if request.order is OrderType.INI:
+            if initialization:
                 raise AmbiguousTransportError(
-                    "INI received HTTP error after possible delivery"
+                    "key initialization received HTTP error after possible delivery"
                 ) from exc
             raise TransportError("bank returned an HTTP error") from exc
         except URLError as exc:
             if isinstance(exc.reason, ssl.SSLCertVerificationError):
                 raise TransientTransportError("HTTPS validation failed") from exc
             if isinstance(exc.reason, ssl.SSLError):
-                if request.order is OrderType.INI:
+                if initialization:
                     raise AmbiguousTransportError(
-                        "INI TLS exchange failed after possible delivery"
+                        "key initialization TLS exchange failed after possible delivery"
                     ) from exc
                 raise TransportError("HTTPS validation failed") from exc
             raise AmbiguousTransportError(
                 "HTTPS exchange ended with unknown delivery status"
             ) from exc
         except ssl.SSLError as exc:
-            if request.order is OrderType.INI:
+            if initialization:
                 raise AmbiguousTransportError(
-                    "INI TLS stream failed after possible delivery"
+                    "key initialization TLS stream failed after possible delivery"
                 ) from exc
             raise TransportError("HTTPS exchange failed") from exc
         except (TimeoutError, OSError) as exc:
@@ -245,9 +276,9 @@ class HttpsTransport:
                 "HTTPS exchange ended with unknown delivery status"
             ) from exc
         except Exception as exc:
-            if request.order is OrderType.INI:
+            if initialization:
                 raise AmbiguousTransportError(
-                    "INI response handling ended after possible delivery"
+                    "key initialization response handling ended after possible delivery"
                 ) from exc
             raise
 

@@ -2,14 +2,14 @@
 
 ## Subscriber keys
 
-The host provides three independent keys through `KeyProvider`: signature,
-authentication, and encryption. H005 represents their public material as X.509
-certificates. The core requests only certificates and fixed X002/E002
-operations. It uses the signature role only to obtain the INI certificate. The
-structurally
-read-only operation set never asks the provider to create an A006 business
-signature. X002 signing and E002 transaction-key decryption remain fixed
-provider operations; private keys are never exported.
+The host provides three key roles through `KeyProvider`: signature,
+authentication, and encryption. Authentication and encryption may share one
+dual-use key; neither may reuse the signature key. H005 represents their public
+material as X.509 certificates. INI transmits the signature certificate; HIA
+reads it only to enforce role separation and transmits the other two. The
+structurally read-only operation set never asks the provider to create an A006
+business signature. X002 signing and E002 transaction-key decryption remain
+fixed provider operations; private keys are never exported.
 
 INI initializes the signature certificate. HIA initializes authentication and
 encryption certificates. Both operations produce initialization-letter data for
@@ -22,6 +22,13 @@ KeyUsage bits are retained when content-commitment is present, as required by
 the return-code annex. `Bank.institution_name` supplies the letter recipient and
 does not affect bank identity. The letter prints the exact transmitted
 certificate as PEM and hashes the original DER bytes.
+
+The implemented HIA path validates the self-signed X002 authentication and E002
+encryption profiles with 2048–16384-bit RSA keys and role-correct KeyUsage. The
+E002 certificate also requires its profile's common name. The two roles may
+share a dual-use key, but neither may reuse the A006 signature key. The HIA
+letter prints and hashes the exact two certificates transmitted, in
+authentication-then-encryption order.
 
 Production storage is a host decision. SQLCipher, an OS credential store,
 PKCS#11, or an HSM integration belongs outside this package. The March 2026
@@ -71,10 +78,10 @@ HCA/HCS renewal and SPR suspension are out of v1 scope. Expired or suspended
 subscribers must follow the bank's INI/HIA initialization-letter process again.
 The v1 self-signed bank profile checks certificate time validity, RSA/SHA-256
 with `rsaEncryption` SPKI, 2048–16384-bit RSA, bounded validity and serial
-number, exact role key usage, self-key authority identifier, unknown critical
-extensions, forbidden EKU/freshest-CRL, self-signature, and separate
-authentication and encryption keys. CA-issued profiles, including CFONB
-deployments, remain a separate future profile rather than a validation bypass.
+number, role-correct key usage, self-key authority identifier, unknown critical
+extensions, forbidden EKU/freshest-CRL, and self-signature. CA-issued profiles,
+including CFONB deployments, remain a separate future profile rather than a
+validation bypass.
 
 ## Memory limitations
 

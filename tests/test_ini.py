@@ -28,7 +28,7 @@ from ebics_read import (
     TransientTransportError,
     TransportResponse,
 )
-from ebics_read.ini import _parse_ini_response
+from ebics_read.ini import _parse_key_initialization_response
 from ebics_read.testing import FixedClock, InMemoryBankKeyTrustStore
 from ebics_read.transport import _PreparedTransportRequest
 from ebics_read.xml import XmlLimits
@@ -424,13 +424,13 @@ def test_ini_rejects_oversized_order_data_and_fake_protocol_before_transport() -
 
 
 def test_ini_response_requires_exact_success_without_order_data() -> None:
-    _parse_ini_response(_ini_response(), XmlLimits())
+    _parse_key_initialization_response(_ini_response(), XmlLimits())
     for response, expected in (
         (_ini_response(technical="091002", order_id=False), ("091002", "000000")),
         (_ini_response(business="091201", order_id=False), ("000000", "091201")),
     ):
         with pytest.raises(EbicsReturnCodeError) as rejected:
-            _parse_ini_response(response, XmlLimits())
+            _parse_key_initialization_response(response, XmlLimits())
         assert (rejected.value.technical, rejected.value.business) == expected
     for response in (
         _ini_response(technical="091002", business="091201", order_id=False),
@@ -439,7 +439,7 @@ def test_ini_response_requires_exact_success_without_order_data() -> None:
         b"malformed response",
     ):
         with pytest.raises(AmbiguousTransportError, match="ambiguous"):
-            _parse_ini_response(response, XmlLimits())
+            _parse_key_initialization_response(response, XmlLimits())
 
 
 def test_ini_configuration_fails_before_ini_and_ambiguous_attempt_keeps_letter() -> (

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .certificates import _validate_subscriber_signature_certificate
+from .certificates import (
+    _validate_subscriber_authentication_encryption_certificates,
+    _validate_subscriber_signature_certificate,
+)
 from .errors import (
     AmbiguousInitializationError,
     ConfigurationError,
@@ -14,7 +17,8 @@ from .errors import (
     TransportError,
 )
 from .hev import parse_hev_response
-from .ini import _parse_ini_response, _render_ini_letter
+from .hia import _render_hia_letter
+from .ini import _parse_key_initialization_response, _render_ini_letter
 from .interfaces import Clock, DocumentSink, KeyProvider, KeyPurpose, OperationControl
 from .models import (
     Bank,
@@ -69,7 +73,7 @@ class EbicsBackend:
         letter = _render_ini_letter(bank, subscriber, certificate, processed_at)
         try:
             response = self.transport.exchange(request, control)
-            _parse_ini_response(response.body, self.xml_limits)
+            _parse_key_initialization_response(response.body, self.xml_limits)
         except TransientTransportError:
             raise
         except (ResponseLimitError, TransportError) as exc:
@@ -83,7 +87,39 @@ class EbicsBackend:
         protocol: NegotiatedProtocol,
         control: OperationControl,
     ) -> InitializationLetter:
-        raise OperationNotImplementedError("HIA is not implemented")
+        if self.key_provider is None or self.clock is None:
+            raise ConfigurationError("HIA requires a key provider and clock")
+        if bank.institution_name is None:
+            raise ConfigurationError("HIA requires the recipient institution name")
+        processed_at = self.clock.now()
+        signature_der = self.key_provider.certificate_der(KeyPurpose.SIGNATURE)
+        authentication_der = self.key_provider.certificate_der(
+            KeyPurpose.AUTHENTICATION
+        )
+        encryption_der = self.key_provider.certificate_der(KeyPurpose.ENCRYPTION)
+        authentication, encryption = (
+            _validate_subscriber_authentication_encryption_certificates(
+                signature_der, authentication_der, encryption_der, processed_at
+            )
+        )
+        request = _PreparedTransportRequest._for_hia(
+            bank,
+            subscriber,
+            protocol,
+            authentication_der,
+            encryption_der,
+        )
+        letter = _render_hia_letter(
+            bank, subscriber, authentication, encryption, processed_at
+        )
+        try:
+            response = self.transport.exchange(request, control)
+            _parse_key_initialization_response(response.body, self.xml_limits)
+        except TransientTransportError:
+            raise
+        except (ResponseLimitError, TransportError) as exc:
+            raise AmbiguousInitializationError(letter) from exc
+        return letter
 
     def fetch_bank_keys(
         self,
