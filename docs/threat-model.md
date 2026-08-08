@@ -100,8 +100,9 @@ match the bank's out-of-band values.
   successor states. Results carry a content hash plus sanitized provenance
   rather than large in-memory byte tuples. Transport timeouts are
   capped by the operation deadline and cancellation is checked around I/O. The
-  same caller control reaches every network-facing method and covers HEV plus
-  the operation that follows it.
+  same caller control reaches every network-facing method, covers HEV plus the
+  operation that follows it, and checkpoints BTD spool verification, decoding,
+  decompression, extraction, staging, and publication.
 - Retry classification treats only explicit transient transport interruptions as
   retryable when the transport proves no bytes were sent. Default network
   interruptions are ambiguous; security and protocol failures are terminal.

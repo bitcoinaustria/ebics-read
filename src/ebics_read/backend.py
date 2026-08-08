@@ -200,6 +200,26 @@ class EbicsBackend:
     protocol_limits: ProtocolLimits = field(default_factory=ProtocolLimits, repr=False)
     segment_store: SegmentStore | None = field(default=None, repr=False)
 
+    def _raise_if_btd_stopped(self, control: OperationControl) -> None:
+        try:
+            control.raise_if_cancelled()
+        except OperationCancelledError:
+            raise
+        except Exception as exc:
+            raise OperationCancelledError("operation was cancelled") from exc
+        if self.clock is None:
+            raise ConfigurationError("BTD requires a clock provider")
+        now = self.clock.now()
+        deadline = control.deadline
+        if (
+            now.tzinfo is None
+            or now.utcoffset() is None
+            or deadline.tzinfo is None
+            or deadline.utcoffset() is None
+            or deadline <= now
+        ):
+            raise OperationDeadlineError("BTD operation deadline has expired")
+
     def probe_versions(self, bank: Bank, control: OperationControl) -> VersionDiscovery:
         request = _PreparedTransportRequest._for_hev(bank)
         response = self.transport.exchange(request, control)
@@ -920,7 +940,7 @@ class EbicsBackend:
         owner_token = self.nonce_source.random_bytes(32)
         if type(owner_token) is not bytes or len(owner_token) != 32:
             raise ConfigurationError("BTD lease nonce source must return 32 bytes")
-        control.raise_if_cancelled()
+        self._raise_if_btd_stopped(control)
         lease = session_store.acquire_lease(session_id, owner_token, control.deadline)
         state: DownloadSession | None = None
         try:
@@ -951,6 +971,7 @@ class EbicsBackend:
                     encryption_der,
                     key_provider,
                     segment_store,
+                    control,
                 )
                 return state
 
@@ -959,7 +980,9 @@ class EbicsBackend:
                 bootstrap_body: bytes | None = None
                 if 1 in index:
                     initialization = _parse_btd_initial_response(
-                        self._read_btd_response(segment_store, lease, index[1]),
+                        self._read_btd_response(
+                            segment_store, lease, index[1], control
+                        ),
                         trusted_bank_keys,
                         encryption_der,
                         key_provider,
@@ -1028,7 +1051,7 @@ class EbicsBackend:
             index = _btd_spool_index(state, segment_store.list_segments(lease))
             if state.phase is DownloadPhase.INITIALIZED:
                 initialization = _parse_btd_initial_response(
-                    self._read_btd_response(segment_store, lease, index[1]),
+                    self._read_btd_response(segment_store, lease, index[1], control),
                     trusted_bank_keys,
                     encryption_der,
                     key_provider,
@@ -1057,6 +1080,7 @@ class EbicsBackend:
                     lease,
                     trusted_bank_keys,
                     segment_store,
+                    control,
                 )
                 recorded = state.record_segment(state.next_segment)
                 if not session_store.compare_and_swap(lease, state.revision, recorded):
@@ -1121,6 +1145,7 @@ class EbicsBackend:
                 encryption_der,
                 key_provider,
                 segment_store,
+                control,
             )
             verified = state.mark_signatures_and_digests_verified()
             if not session_store.compare_and_swap(lease, state.revision, verified):
@@ -1149,11 +1174,12 @@ class EbicsBackend:
         encryption_der: bytes,
         key_provider: KeyProvider,
         segment_store: SegmentStore,
+        control: OperationControl,
     ) -> tuple[bytes, tuple[str, ...]]:
         if state.transaction_id is None or state.total_segments is None:
             raise SessionConflictError("BTD session lost transaction metadata")
         initialization = _parse_btd_initial_response(
-            self._read_btd_response(segment_store, lease, index[1]),
+            self._read_btd_response(segment_store, lease, index[1], control),
             trusted_bank_keys,
             encryption_der,
             key_provider,
@@ -1172,8 +1198,11 @@ class EbicsBackend:
         fragments = [first_fragment]
         encoded_size = len(first_fragment)
         for segment_number in range(2, state.total_segments + 1):
+            self._raise_if_btd_stopped(control)
             fragment = _parse_btd_transfer_response(
-                self._read_btd_response(segment_store, lease, index[segment_number]),
+                self._read_btd_response(
+                    segment_store, lease, index[segment_number], control
+                ),
                 trusted_bank_keys,
                 state.transaction_id,
                 segment_number,
@@ -1199,11 +1228,12 @@ class EbicsBackend:
         lease: SessionLease,
         trusted_bank_keys: TrustedBankKeys,
         segment_store: SegmentStore,
+        control: OperationControl,
     ) -> None:
         if state.transaction_id is None or state.total_segments is None:
             raise SessionConflictError("BTD session lost transaction metadata")
         fragment = _parse_btd_transfer_response(
-            self._read_btd_response(segment_store, lease, reference),
+            self._read_btd_response(segment_store, lease, reference, control),
             trusted_bank_keys,
             state.transaction_id,
             segment_number,
@@ -1219,10 +1249,12 @@ class EbicsBackend:
         segment_store: SegmentStore,
         lease: SessionLease,
         reference: SegmentReference,
+        control: OperationControl,
     ) -> bytes:
         chunks: list[bytes] = []
         size = 0
         for chunk in segment_store.iter_segment(lease, reference):
+            self._raise_if_btd_stopped(control)
             if type(chunk) is not bytes:
                 raise SecurityError("BTD spool yielded a non-byte chunk")
             size += len(chunk)
@@ -1231,6 +1263,7 @@ class EbicsBackend:
             chunks.append(chunk)
         if not chunks:
             raise SecurityError("BTD spool response is empty")
+        self._raise_if_btd_stopped(control)
         return b"".join(chunks)
 
     def _load_btd_documents(
@@ -1242,7 +1275,11 @@ class EbicsBackend:
         encryption_der: bytes,
         key_provider: KeyProvider,
         segment_store: SegmentStore,
+        control: OperationControl,
     ) -> tuple[tuple[bytes, tuple[ZipMemberIdentity, ...]], ...]:
+        def checkpoint() -> None:
+            self._raise_if_btd_stopped(control)
+
         index = _btd_spool_index(state, segment_store.list_segments(lease))
         transaction_key, fragments = self._verify_btd_spool(
             state,
@@ -1252,11 +1289,15 @@ class EbicsBackend:
             encryption_der,
             key_provider,
             segment_store,
+            control,
         )
         return _extract_btd_documents(
-            _decode_btd_payload(fragments, transaction_key, self.protocol_limits),
+            _decode_btd_payload(
+                fragments, transaction_key, self.protocol_limits, checkpoint
+            ),
             descriptor.container_type,
             self.protocol_limits,
+            checkpoint,
         )
 
     def _stage_btd_documents(
@@ -1283,7 +1324,7 @@ class EbicsBackend:
         )
         staged: list[StagedDocument] = []
         for position, (content, zip_members) in enumerate(documents, start=1):
-            control.raise_if_cancelled()
+            self._raise_if_btd_stopped(control)
             staging_id = DocumentStagingId.derive(
                 state.request_identity, state.transaction_id, position
             )
@@ -1291,7 +1332,7 @@ class EbicsBackend:
             writer = sink.begin(staging_id, provenance)
             try:
                 for offset in range(0, len(content), _DOCUMENT_CHUNK_BYTES):
-                    control.raise_if_cancelled()
+                    self._raise_if_btd_stopped(control)
                     writer.write(content[offset : offset + _DOCUMENT_CHUNK_BYTES])
                 writer.stage(content_sha256, len(content), zip_members)
             except Exception:
@@ -1332,19 +1373,7 @@ class EbicsBackend:
             key_provider,
             authentication_der,
         )
-        control.raise_if_cancelled()
-        if self.clock is None:
-            raise ConfigurationError("BTD requires a clock provider")
-        now = self.clock.now()
-        deadline = control.deadline
-        if (
-            now.tzinfo is None
-            or now.utcoffset() is None
-            or deadline.tzinfo is None
-            or deadline.utcoffset() is None
-            or deadline <= now
-        ):
-            raise OperationDeadlineError("BTD operation deadline has expired")
+        self._raise_if_btd_stopped(control)
         pending = (
             state.mark_positive_receipt_pending()
             if receipt is ReceiptKind.POSITIVE
@@ -1379,29 +1408,17 @@ class EbicsBackend:
     def _discard_unpersisted_btd_stages(
         self,
         state: DownloadSession,
-        lease: SessionLease,
         descriptor: BtfDescriptor,
-        trusted_bank_keys: TrustedBankKeys,
-        encryption_der: bytes,
-        key_provider: KeyProvider,
-        segment_store: SegmentStore,
         sink: DocumentSink,
     ) -> None:
-        try:
-            documents = self._load_btd_documents(
-                state,
-                lease,
-                descriptor,
-                trusted_bank_keys,
-                encryption_der,
-                key_provider,
-                segment_store,
-            )
-        except ProtocolError:
-            return
         if state.transaction_id is None:
             raise SessionConflictError("BTD session lost its transaction ID")
-        for position in range(1, len(documents) + 1):
+        maximum_positions = (
+            1
+            if descriptor.container_type is ContainerType.NONE
+            else self.protocol_limits.max_zip_members
+        )
+        for position in range(1, maximum_positions + 1):
             sink.discard(
                 DocumentStagingId.derive(
                     state.request_identity, state.transaction_id, position
@@ -1417,7 +1434,6 @@ class EbicsBackend:
         protocol: NegotiatedProtocol,
         trusted_bank_keys: TrustedBankKeys,
         authentication_der: bytes,
-        encryption_der: bytes,
         key_provider: KeyProvider,
         session_store: SessionStore,
         segment_store: SegmentStore,
@@ -1442,24 +1458,14 @@ class EbicsBackend:
             if current is not None:
                 self._discard_unpersisted_btd_stages(
                     current,
-                    lease,
                     descriptor,
-                    trusted_bank_keys,
-                    encryption_der,
-                    key_provider,
-                    segment_store,
                     sink,
                 )
             segment_store.discard(lease)
             raise
         self._discard_unpersisted_btd_stages(
             state,
-            lease,
             descriptor,
-            trusted_bank_keys,
-            encryption_der,
-            key_provider,
-            segment_store,
             sink,
         )
         finished = state.finish()
@@ -1514,7 +1520,7 @@ class EbicsBackend:
         owner_token = self.nonce_source.random_bytes(32)
         if type(owner_token) is not bytes or len(owner_token) != 32:
             raise ConfigurationError("BTD lease nonce source must return 32 bytes")
-        control.raise_if_cancelled()
+        self._raise_if_btd_stopped(control)
         lease = session_store.acquire_lease(session_id, owner_token, control.deadline)
         try:
             state = session_store.load(lease)
@@ -1542,12 +1548,7 @@ class EbicsBackend:
                     if state.receipt_kind is ReceiptKind.NEGATIVE:
                         self._discard_unpersisted_btd_stages(
                             state,
-                            lease,
                             descriptor,
-                            trusted_bank_keys,
-                            encryption_der,
-                            key_provider,
-                            segment_store,
                             sink,
                         )
                         segment_store.discard(lease)
@@ -1558,12 +1559,7 @@ class EbicsBackend:
                     if state.receipt_kind is ReceiptKind.NEGATIVE:
                         self._discard_unpersisted_btd_stages(
                             state,
-                            lease,
                             descriptor,
-                            trusted_bank_keys,
-                            encryption_der,
-                            key_provider,
-                            segment_store,
                             sink,
                         )
                         segment_store.discard(lease)
@@ -1577,12 +1573,7 @@ class EbicsBackend:
                     if state.receipt_kind is ReceiptKind.NEGATIVE:
                         self._discard_unpersisted_btd_stages(
                             state,
-                            lease,
                             descriptor,
-                            trusted_bank_keys,
-                            encryption_der,
-                            key_provider,
-                            segment_store,
                             sink,
                         )
                         state = _persist_btd_successor(
@@ -1594,7 +1585,7 @@ class EbicsBackend:
                         )
                     published: list[DownloadedDocument] = []
                     for staged_record in state.staged_documents:
-                        control.raise_if_cancelled()
+                        self._raise_if_btd_stopped(control)
                         reference = sink.publish(staged_record.staging_id)
                         published.append(
                             DownloadedDocument(
@@ -1641,6 +1632,7 @@ class EbicsBackend:
                             encryption_der,
                             key_provider,
                             segment_store,
+                            control,
                         )
                         if state.phase is DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED:
                             state = _persist_btd_successor(
@@ -1684,7 +1676,6 @@ class EbicsBackend:
                             protocol,
                             trusted_bank_keys,
                             authentication_der,
-                            encryption_der,
                             key_provider,
                             session_store,
                             segment_store,

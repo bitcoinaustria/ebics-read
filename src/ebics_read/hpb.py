@@ -6,6 +6,7 @@ import base64
 import binascii
 import hmac
 import zlib
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from lxml import etree
@@ -264,17 +265,32 @@ def _base64_value(
     return decoded
 
 
-def _decompress_zlib(data: bytes, maximum_bytes: int) -> bytes:
+def _decompress_zlib(
+    data: bytes,
+    maximum_bytes: int,
+    checkpoint: Callable[[], None] | None = None,
+) -> bytes:
     inflater = zlib.decompressobj()
+    result = bytearray()
     try:
-        result = inflater.decompress(data, maximum_bytes + 1)
-        if len(result) > maximum_bytes or inflater.unconsumed_tail:
-            raise ResponseLimitError("EBICS order data exceeds its byte limit")
-        result += inflater.flush(maximum_bytes + 1 - len(result))
+        for offset in range(0, len(data), 64 * 1024):
+            if checkpoint is not None:
+                checkpoint()
+            result.extend(
+                inflater.decompress(
+                    data[offset : offset + 64 * 1024],
+                    maximum_bytes + 1 - len(result),
+                )
+            )
+            if len(result) > maximum_bytes or inflater.unconsumed_tail:
+                raise ResponseLimitError("EBICS order data exceeds its byte limit")
+        if checkpoint is not None:
+            checkpoint()
+        result.extend(inflater.flush(maximum_bytes + 1 - len(result)))
     except zlib.error as exc:
         raise SecurityError("EBICS order data is not one valid zlib stream") from exc
     if len(result) > maximum_bytes:
         raise ResponseLimitError("EBICS order data exceeds its byte limit")
     if not inflater.eof or inflater.unused_data:
         raise SecurityError("EBICS order data is not one complete zlib stream")
-    return result
+    return bytes(result)

@@ -160,7 +160,8 @@ contain only a content SHA-256, sanitized ZIP-member identities, and verified
 retrieval provenance. `OperationControl` supplies a whole-operation deadline and
 cancellation check. Each transport call is bounded by the lesser of its
 per-request timeout and remaining operation deadline, with cancellation checks
-before and after blocking I/O. Raw (`NONE`) and bounded ZIP containers are
+before and after blocking I/O and during bounded BTD decode and extraction
+loops. Raw (`NONE`) and bounded ZIP containers are
 implemented. XML and SVC framing and portable account selection fail closed
 because no recorded public H005 definition supports them.
 

@@ -12,6 +12,8 @@ All notable changes will be recorded here. The project has made no release.
   rather than embedding the license name.
 - Raised the `cryptography` dependency floor to 50.0.0 so supported installs do
   not resolve to the vulnerable 49.0.0 release.
+- Enforced BTD deadlines and cancellation throughout protected-spool reading,
+  base64/AES/zlib processing, ZIP extraction, staging, and publication.
 
 ### Added
 

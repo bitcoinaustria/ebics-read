@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from io import BytesIO
 from random import Random
 from zipfile import ZIP_STORED, ZipFile
@@ -8,7 +9,7 @@ from zipfile import ZIP_STORED, ZipFile
 import pytest
 from lxml import etree
 from test_btd import _Control, _descriptor
-from test_haa import _setup, _Transport
+from test_haa import _NOW, _setup, _Transport
 
 from ebics_read import (
     AmbiguousTransportError,
@@ -23,6 +24,7 @@ from ebics_read import (
     DownloadSession,
     NegotiatedProtocol,
     OperationCancelledError,
+    OperationDeadlineError,
     OperationNotImplementedError,
     RetrievalProvenance,
     SecurityError,
@@ -107,6 +109,7 @@ class _Sink:
     cancel_control: DeadlineControl | None = None
     cancel_after_stage: bool = False
     cancel_on_write: bool = False
+    arm_custom_control: _CustomCancellationControl | None = None
     stages: dict[
         DocumentStagingId,
         tuple[
@@ -122,6 +125,8 @@ class _Sink:
         self, staging_id: DocumentStagingId, provenance: RetrievalProvenance
     ) -> _Writer:
         self.stages.pop(staging_id, None)
+        if self.arm_custom_control is not None:
+            self.arm_custom_control.armed = True
         return _Writer(self, staging_id, provenance)
 
     def publish(self, staging_id: DocumentStagingId) -> DocumentReference:
@@ -135,6 +140,20 @@ class _Sink:
 
     def discard(self, staging_id: DocumentStagingId) -> None:
         self.stages.pop(staging_id, None)
+
+
+class _SyntheticCustomCancellationError(Exception):
+    pass
+
+
+@dataclass
+class _CustomCancellationControl:
+    deadline: datetime = _Control.deadline
+    armed: bool = False
+
+    def raise_if_cancelled(self) -> None:
+        if self.armed:
+            raise _SyntheticCustomCancellationError("synthetic custom cancellation")
 
 
 @dataclass
@@ -342,6 +361,30 @@ def test_btd_mid_staging_cancellation_sends_no_negative_receipt() -> None:
     )
     assert len(documents) == 1
     assert transport.calls == 3
+
+
+def test_btd_custom_cancellation_never_sends_a_negative_receipt() -> None:
+    backend, transport, trusted, _ = _prepared_backend(b"synthetic document")
+    control = _CustomCancellationControl()
+    sink = _Sink(transport, arm_custom_control=control)
+
+    with pytest.raises(OperationCancelledError) as failure:
+        _download(backend, trusted, sink, control=control)
+
+    assert isinstance(failure.value.__cause__, _SyntheticCustomCancellationError)
+    assert transport.calls == 2
+    assert not sink.stages
+
+
+def test_btd_expired_deadline_stops_before_acquiring_processing_work() -> None:
+    backend, transport, trusted, _ = _prepared_backend(b"synthetic document")
+    sink = _Sink(transport)
+
+    with pytest.raises(OperationDeadlineError):
+        _download(backend, trusted, sink, control=DeadlineControl(_NOW))
+
+    assert transport.calls == 0
+    assert not sink.stages
 
 
 def test_btd_sink_stage_failure_completes_negative_receipt() -> None:

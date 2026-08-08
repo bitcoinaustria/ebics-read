@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from hashlib import sha256
 from io import BytesIO
@@ -55,12 +56,42 @@ from .models import (
 from .xml import XmlLimits
 
 _ZIP_CHUNK_BYTES = 64 * 1024
+_BASE64_CHUNK_BYTES = 64 * 1024
+
+
+def _iter_strict_base64(
+    fragments: tuple[str, ...], checkpoint: Callable[[], None]
+) -> Iterator[bytes]:
+    pending = b""
+    for fragment in fragments:
+        checkpoint()
+        try:
+            encoded = fragment.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise XmlSecurityError("BTD order data is not strict base64") from exc
+        pending += encoded
+        while len(pending) > _BASE64_CHUNK_BYTES:
+            block = pending[:_BASE64_CHUNK_BYTES]
+            pending = pending[_BASE64_CHUNK_BYTES:]
+            checkpoint()
+            if b"=" in block:
+                raise XmlSecurityError("BTD order data is not strict base64")
+            try:
+                yield base64.b64decode(block, validate=True)
+            except binascii.Error as exc:
+                raise XmlSecurityError("BTD order data is not strict base64") from exc
+    checkpoint()
+    try:
+        yield base64.b64decode(pending, validate=True)
+    except binascii.Error as exc:
+        raise XmlSecurityError("BTD order data is not strict base64") from exc
 
 
 def _decode_btd_payload(
     fragments: tuple[str, ...],
     transaction_key: bytes,
     protocol_limits: ProtocolLimits,
+    checkpoint: Callable[[], None],
 ) -> bytes:
     """Strictly decode, decrypt, and expand one bounded BTD payload."""
 
@@ -69,21 +100,37 @@ def _decode_btd_payload(
     encoded_size = sum(len(fragment) for fragment in fragments)
     if encoded_size > _encoded_order_data_limit(protocol_limits):
         raise ResponseLimitError("BTD encoded order data exceeds the configured limit")
-    encoded = "".join(fragments)
-    try:
-        ciphertext = base64.b64decode(encoded.encode("ascii"), validate=True)
-    except (UnicodeEncodeError, binascii.Error) as exc:
-        raise XmlSecurityError("BTD order data is not strict base64") from exc
-    if not ciphertext or len(ciphertext) > protocol_limits.max_compressed_bytes + 16:
+    ciphertext_size = 0
+
+    def ciphertext_chunks() -> Iterator[bytes]:
+        nonlocal ciphertext_size
+        for chunk in _iter_strict_base64(fragments, checkpoint):
+            ciphertext_size += len(chunk)
+            if ciphertext_size > protocol_limits.max_compressed_bytes + 16:
+                raise ResponseLimitError(
+                    "BTD encrypted order data exceeds the configured limit"
+                )
+            yield chunk
+
+    compressed = bytearray()
+    for chunk in iter_decrypt_e002(ciphertext_chunks(), transaction_key):
+        checkpoint()
+        compressed.extend(chunk)
+        if len(compressed) > protocol_limits.max_compressed_bytes:
+            raise ResponseLimitError(
+                "BTD compressed order data exceeds the configured limit"
+            )
+    if ciphertext_size == 0:
         raise ResponseLimitError(
             "BTD encrypted order data exceeds the configured limit"
         )
-    compressed = b"".join(iter_decrypt_e002((ciphertext,), transaction_key))
-    if not compressed or len(compressed) > protocol_limits.max_compressed_bytes:
+    if not compressed:
         raise ResponseLimitError(
             "BTD compressed order data exceeds the configured limit"
         )
-    payload = _decompress_zlib(compressed, protocol_limits.max_decompressed_bytes)
+    payload = _decompress_zlib(
+        bytes(compressed), protocol_limits.max_decompressed_bytes, checkpoint
+    )
     if not payload:
         raise SecurityError("BTD payload is empty")
     if len(payload) > len(compressed) * protocol_limits.max_compression_ratio:
@@ -95,9 +142,11 @@ def _extract_btd_documents(
     payload: bytes,
     container_type: ContainerType,
     protocol_limits: ProtocolLimits,
+    checkpoint: Callable[[], None],
 ) -> tuple[tuple[bytes, tuple[ZipMemberIdentity, ...]], ...]:
     """Return bounded documents without ever exposing ZIP member names."""
 
+    checkpoint()
     if type(payload) is not bytes or not payload:
         raise SecurityError("BTD payload is empty")
     if len(payload) > protocol_limits.max_decompressed_bytes:
@@ -118,6 +167,7 @@ def _extract_btd_documents(
             if not members or len(members) > protocol_limits.max_zip_members:
                 raise ResponseLimitError("BTD ZIP member count exceeds its limit")
             for index, member in enumerate(members):
+                checkpoint()
                 name = member.filename
                 path = name[:-1] if member.is_dir() else name
                 parts = path.split("/")
@@ -157,9 +207,12 @@ def _extract_btd_documents(
                         "BTD ZIP contents exceed their total limit"
                     )
                 content = bytearray()
+                content_digest = sha256()
                 with archive.open(member, "r") as source:
                     while chunk := source.read(_ZIP_CHUNK_BYTES):
+                        checkpoint()
                         content.extend(chunk)
+                        content_digest.update(chunk)
                         if (
                             len(content) > member.file_size
                             or len(content) > protocol_limits.max_zip_member_bytes
@@ -175,7 +228,7 @@ def _extract_btd_documents(
                 identity = ZipMemberIdentity(
                     index,
                     ContentSha256.from_bytes(name.encode("utf-8")),
-                    ContentSha256.from_bytes(document),
+                    ContentSha256(content_digest.hexdigest().upper()),
                     len(document),
                 )
                 documents.append((document, (identity,)))
