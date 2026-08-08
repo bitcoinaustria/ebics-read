@@ -91,7 +91,7 @@ match the bank's out-of-band values.
   container validation have completed; negative and ambiguous receipt outcomes
   have distinct states.
 - Session revisions require lease/CAS storage and each session is bound to a
-  hidden download-request identity. Partial ciphertext has a protected
+  hidden download-request identity. Protected raw response fragments have a
   caller-spool contract with a recoverable number/reference index. Verified
   plaintext is staged under a deterministic idempotency key, then published
   only after the positive receipt response; both sides of publication are
@@ -108,32 +108,32 @@ match the bank's out-of-band values.
 - Core modules contain no logging calls or event payloads.
 - Sensitive model fields are omitted from representations.
 
-## Required controls before protocol completion
+## Protocol controls enforced
 
-- Run fixed operation-specific shape and authentication-marker validation before
+- Fixed operation-specific shape and authentication-marker validation runs before
   accepting fields from an X002-verified response. The common X002 verifier
   already fixes the XPointer, algorithms, transforms, element order, digest,
   canonicalization, and pinned-bank RSA verification.
-- Reject unknown algorithms.
-- Generate a fresh 128-bit nonce and timestamp for every signed initial request;
+- Unknown algorithms are rejected.
+- Every signed initial request uses a fresh 128-bit nonce and timestamp;
   treat `EBICS_TX_MESSAGE_REPLAY` as a security failure rather than silently
   retrying it.
-- Atomically claim every authenticated bank transaction ID through the
-  persistent session store in the same operation that records initialized
-  state. Retain claims after completed, failed, or ambiguous outcomes.
-- Enforce segment count/order/completeness, compressed and decompressed sizes,
-  ZIP members, member paths, member sizes, and compression ratios.
-- Apply phase-specific handling of ambiguous transport outcomes in the future
-  executable BTD state machine; never blindly replay them.
-- Derive `DownloadRequestIdentity` from the exact bank, subscriber, negotiated
+- BTD atomically claims each authenticated bank transaction ID in the same
+  operation that records initialized state. Discovery durably claims the ID
+  before transfer. Claims remain after completed, failed, or ambiguous outcomes.
+- Limits are enforced for segment count/order/completeness, compressed and
+  decompressed sizes, ZIP members, member paths, member sizes, and compression
+  ratios.
+- BTD applies phase-specific handling of ambiguous transport outcomes and never
+  blindly replays them.
+- `DownloadRequestIdentity` is derived from the exact bank, subscriber, negotiated
   protocol, pinned bank keys, descriptor, and download options before storing
   or resuming a session.
-- Derive each deterministic `DocumentStagingId` from the bound request identity,
+- Each deterministic `DocumentStagingId` is derived from the bound request identity,
   globally claimed authenticated transaction ID, and stable document position
   before beginning sink I/O. If its session transition is not persisted, discard
   that unpublished stage before terminal failure; recompute and discard it after
   a crash.
-- Add deterministic official crypto vectors before any live use.
 
 ## Residual risks
 
@@ -144,12 +144,16 @@ match the bank's out-of-band values.
 - Caller-supplied providers may violate their contracts.
 - Bank profiles and national BTF mappings vary and may be incompletely
   discoverable.
+- Cryptographic paths have synthetic and normative-document evidence, but no
+  separately published official vector suite or live-bank evidence.
 - Agent review does not replace an external human security audit.
 
 ## Adversarial agent review log
 
-X002, E002, INI, and HIA received focused review-only agent passes after
-implementation; these are agent reviews, not external human security audits.
+X002, E002, INI, HIA, HPB, HPD, HAA, HKD, HTD, and the BTD envelope, recovery,
+processing, receipt, and publication slices received focused review-only agent
+passes after implementation; these are agent reviews, not external human
+security audits.
 INI review findings on its clock boundary, one-message size limit, and exact
 protocol type, retry ambiguity, certificate profile, and letter identity were
 corrected before commit.
@@ -181,9 +185,9 @@ additional edge cases:
 The same reviewer then performed a final verification: all 25 targeted invalid
 cases were rejected, the valid session path still reached `VERIFIED`, all 34
 tests passed, and no actionable foundation finding remained.
-XML signature verification remains the highest-risk unimplemented component;
-it requires a new adversarial review by a session that did not implement it
-before the Experimental release gate can pass.
+XML signature verification remains a high-risk component despite synthetic
+negative coverage and focused non-author agent review; the Experimental release
+gate still requires resolved or explicitly accepted fresh-context findings.
 
 ### Foundation-correction review
 

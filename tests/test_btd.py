@@ -397,9 +397,7 @@ def test_btd_ambiguous_transfer_is_terminal_and_never_retried() -> None:
 
 
 def test_btd_rejects_an_oversized_first_fragment_before_another_request() -> None:
-    backend, transport, trusted = _setup(
-        limits=ProtocolLimits(max_compressed_bytes=1)
-    )
+    backend, transport, trusted = _setup(limits=ProtocolLimits(max_compressed_bytes=1))
     transport.fragments = (base64.b64encode(b"x" * 20).decode("ascii"),)
     backend = replace(backend, segment_store=InMemorySegmentStore())
 

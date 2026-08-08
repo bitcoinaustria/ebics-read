@@ -86,6 +86,10 @@ BTD is not complete until initialization, transaction-ID validation, ordered
 segment transfer, authenticated response validation, decryption,
 decompression/container extraction, return-code validation, and receipt
 completion all succeed. Partial bytes are never returned as a document.
+Raw (`NONE`) and bounded ZIP containers are supported. XML and SVC container
+framing fails closed because no public definition has been recorded. H005 has
+no portable BTD account-selector parameter, so callers select an advertised BTF
+service and an account selector is rejected before network I/O.
 
 Receipt code `0` is positive and may be sent only after the complete order data
 has been authenticated, decrypted, decompressed, and accepted. Receipt code `1`

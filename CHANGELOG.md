@@ -39,5 +39,13 @@ All notable changes will be recorded here. The project has made no release.
 - Exact segmented H005 HAA with X002-authenticated control metadata, bounded
   E002 processing, durable transaction replay claims, strict BTF services, and
   verified positive or negative receipts.
+- Exact segmented HPD, HKD, and HTD discovery with strict typed projection of
+  bank parameters, BTF services, accounts, subscribers, and permissions.
+- Exact H005 BTD initialization, transfer, and receipt envelopes with protected
+  crash recovery, bounded E002/zlib/ZIP processing, negative-receipt failure
+  handling, and idempotent receipt-before-publication delivery.
+- Default-CI synthetic BTD over verified local TLS plus an explicitly gated
+  live-bank smoke contract that isolates relative provider writes and requires
+  protected persistent state outside the repository.
 - Architecture, threat-model, protocol-scope, key-lifecycle, interoperability,
   and clean-room source documentation.

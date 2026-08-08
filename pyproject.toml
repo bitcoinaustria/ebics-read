@@ -55,6 +55,7 @@ ebics_read = ["py.typed"]
 addopts = "--strict-config --strict-markers --cov=ebics_read --cov-branch --cov-report=term-missing --cov-fail-under=85"
 testpaths = ["tests"]
 markers = [
+  "live: requires an external untracked provider and explicit live-bank acknowledgement",
   "schema: requires a separately supplied official EBICS schema artifact",
 ]
 

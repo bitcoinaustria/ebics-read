@@ -15,7 +15,7 @@ interoperability has been demonstrated.
 | Module | Responsibility |
 | --- | --- |
 | `client` | Explicit HEV, INI, HIA, HPB, discovery, trust acceptance, and BTD facade |
-| `backend` | Concrete fixed-operation engine; currently connects HEV, INI, HIA, HPB, HPD, HAA, and HKD |
+| `backend` | Concrete fixed-operation engine for the complete fixed operation set |
 | `models` | Immutable, bounded configuration, descriptor, capability, key, and result values |
 | `orders` | Complete fixed allowlist; no generic order constructor |
 | `interfaces` | Injected keys, bank trust, clock, nonce, leased state, segment spool, streaming sink, and operation-control boundaries |
@@ -27,7 +27,9 @@ interoperability has been demonstrated.
 | `hpb` | Exact signed HPB request and bounded untrusted bank-key extraction |
 | `hpd` | Exact segmented HPD transaction and strict bank-parameter discovery |
 | `hkd` | Exact segmented HKD transaction and BTD-only customer/permission discovery |
+| `htd` | Exact segmented HTD transaction and account/subscriber discovery |
 | `haa` | Exact segmented HAA transaction and strict service discovery |
+| `btd` | Exact BTD envelopes, request identity, bounded payload decoding, and container extraction |
 | `x002` | Exact authenticated-node digest and pinned-bank RSA verification |
 | `e002` | Fixed incremental AES-128-CBC order-data decryption |
 | `ini` | Exact unsecured INI request data, response checks, and letter rendering |
@@ -57,8 +59,7 @@ rebuilds the signed tree. Python's standard XML APIs do not expose the same
 complete parser control surface.
 
 `cryptography` is selected for strict X.509 parsing, certificate construction in
-synthetic tests, RSA, hashes, exact X002 verification, and future E002
-composition. It delegates
+synthetic tests, RSA, hashes, exact X002 verification, and E002 composition. It delegates
 to audited native cryptographic implementations; EBICS Read implements no
 primitive. These are the only runtime dependencies.
 
@@ -66,10 +67,9 @@ The transport protocol receives only a read-only request view plus the
 whole-operation control. The default transport accepts only the protocol core's
 private prepared request type. There is no factory that accepts caller XML or an
 order argument: the current builders construct only exact HEV/H000, INI/H005,
-HIA/H005, HPB/H005, and fixed-phase HPD/HAA/HKD H005 requests. Future operations require
-equally specific fixed-shape builders.
+HIA/H005, HPB/H005, and fixed-phase HPD/HAA/HKD/HTD/BTD H005 requests.
 
-`EbicsBackend` completes HEV, INI, HIA, HPB, HPD, HAA, and HKD as fixed vertical slices. INI and HIA
+`EbicsBackend` completes the fixed operation set as fixed vertical slices. INI and HIA
 request only fixed provider certificate roles, validate their self-signed
 profiles, emit exact compressed unsecured requests, accept deliberately unsigned
 responses only through verified TLS, and return deterministic letter data.
@@ -77,15 +77,14 @@ HPB creates a fresh nonce and timestamp, locally verifies the provider's X002
 signature, bounds E002 decryption and decompression, validates the returned bank
 certificates, and leaves them unusable until explicit out-of-band acceptance.
 HPD runs first, keeps advertised URLs informational, and independently gates
-HAA/HKD through DownloadableOrderData and ClientDataDownload. HPD, HAA, and HKD authenticate
+HAA/HKD/HTD through DownloadableOrderData and ClientDataDownload. Discovery downloads authenticate
 response control and encryption metadata with the pinned X002 bank key, reject
 replayed transaction IDs, enforce base64-conformant 1 MiB segments and aggregate
 limits, and acknowledge only coherent complete data. H005 does not
-X002-authenticate `OrderData`; HPD/HAA/HKD payload integrity therefore also
+X002-authenticate `OrderData`; discovery payload integrity therefore also
 depends on verified TLS, and no bank electronic signature is claimed.
 The client performs mandatory HEV negotiation first; missing operation
-dependencies are rejected before the corresponding request is sent. Remaining
-backend operations fail with a typed not-implemented error.
+dependencies are rejected before the corresponding request is sent.
 
 ## Operation state
 
@@ -103,8 +102,7 @@ Initialization and downloads are separate workflows:
 
 An authenticated 128-bit bank transaction ID is represented by `TransactionId`
 and globally claimed through `SessionStore`. BTD combines that claim with its
-initial state transition; HPD/HAA/HKD claim the ID directly but do not yet implement
-the optional transfer or receipt recovery flow. Every duplicate fails as a
+initial state transition; discovery transactions claim the ID directly. Every duplicate fails as a
 replay, and claims remain after terminal or completed transactions.
 
 Downloaded HPB keys never become trusted as a side effect of network activity.
@@ -142,8 +140,8 @@ session is initialized. Every caller-supplied session ID is bound to a hidden
 `DownloadRequestIdentity`; resumption under different bank, subscriber, key,
 descriptor, or option inputs must produce a different identity and fail.
 `SessionStore` requires an exclusive `SessionLease` and compare-and-swap
-revision for every update. `SegmentStore` keeps sensitive
-partial ciphertext in caller-controlled protected storage and exposes an
+revision for every update. `SegmentStore` keeps sensitive protected response
+fragments in caller-controlled storage and exposes an
 ordered number/reference index so a restarted worker can recover it. `DocumentSink`
 streams into an unpublished writer. The writer durably stages accepted
 plaintext; the sink publishes it idempotently only after the positive receipt
@@ -162,8 +160,9 @@ contain only a content SHA-256, sanitized ZIP-member identities, and verified
 retrieval provenance. `OperationControl` supplies a whole-operation deadline and
 cancellation check. Each transport call is bounded by the lesser of its
 per-request timeout and remaining operation deadline, with cancellation checks
-before and after blocking I/O. These interfaces are design boundaries; BTD
-execution is not yet implemented.
+before and after blocking I/O. Raw (`NONE`) and bounded ZIP containers are
+implemented. XML and SVC framing and portable account selection fail closed
+because no recorded public H005 definition supports them.
 
 ## Data minimization
 

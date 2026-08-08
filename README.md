@@ -3,9 +3,8 @@
 An independent, MIT-licensed, read-only Python client for EBICS 3.0/H005.
 
 > [!WARNING]
-> EBICS Read is pre-alpha foundation work, not a usable or production-ready EBICS
-> client. It has not completed cryptographic implementation or bank
-> interoperability testing.
+> EBICS Read is pre-alpha and not production-ready. Its fixed read-only protocol
+> paths have synthetic evidence only; bank interoperability has not been tested.
 
 EBICS Read is an independent open-source project. It is not affiliated with or
 endorsed by EBICS SC or any financial institution.
@@ -41,9 +40,10 @@ Current foundation APIs provide:
 - exact X002 response digest/signature verification against the explicitly
   pinned bank authentication certificate;
 - fixed E002 transaction-key and incremental order-data decryption;
-- concrete HEV, INI, HIA, HPB, HPD, HAA, and HKD backends, including strict subscriber
-  and bank-candidate certificate validation, printable initialization letters,
-  bounded capability segments, replay rejection, and exact receipts;
+- concrete HEV, INI, HIA, HPB, HPD, HAA, HKD, HTD, and BTD backends, including
+  strict certificate validation, printable initialization letters, bounded
+  segmented downloads, replay rejection, exact receipts, crash recovery, and
+  receipt-before-publication document delivery;
 - production system-clock, CSPRNG nonce, deadline, and cancellation defaults;
 - HTTPS-only TLS 1.2+ transport with certificate verification, no redirects,
   no implicit environment proxy, and bounded responses;
@@ -52,10 +52,11 @@ Current foundation APIs provide:
 - synthetic deterministic testing helpers that must never hold production
   secrets.
 
-HEV, INI, HIA, HPB, HPD, HAA, and HKD are complete synthetic protocol transactions.
-HTD and segmented BTD execution remain unimplemented. Synthetic local-TLS
-and separately supplied official-schema evidence does not establish bank
-interoperability or conformance.
+Every fixed operation has a complete synthetic protocol path. BTD accepts raw
+(`NONE`) and bounded ZIP containers; XML and SVC container framing fails closed
+until a public specification is recorded. Synthetic local-TLS and separately
+supplied official-schema evidence does not establish bank interoperability or
+conformance.
 
 ## Development
 

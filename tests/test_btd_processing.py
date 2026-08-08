@@ -116,9 +116,7 @@ def test_btd_zip_validates_directory_entries_before_skipping_them() -> None:
         archive.writestr(link, b"")
         archive.writestr("document", b"content")
     with pytest.raises(SecurityError, match="symbolic"):
-        _extract_btd_documents(
-            output.getvalue(), ContainerType.ZIP, ProtocolLimits()
-        )
+        _extract_btd_documents(output.getvalue(), ContainerType.ZIP, ProtocolLimits())
 
     hidden = _zip(("hidden/", b"secret"), ("document", b"content"))
     with pytest.raises(SecurityError, match="directory entry"):
