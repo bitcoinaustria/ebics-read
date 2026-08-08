@@ -58,7 +58,7 @@ certification evidence:
 
 Unknown algorithm identifiers fail closed.
 
-HPD and HAA use the standard segmented download transaction. Each Base64 segment is
+HPD, HAA, and HKD use the standard segmented download transaction. Each Base64 segment is
 individually conformant and at most 1 MiB; the concatenated value is decoded,
 E002-decrypted, zlib-expanded, and parsed into exact restricted bank parameters
 or BTF services. HPD URLs remain opaque informational values and never replace
@@ -66,6 +66,10 @@ the configured endpoint. Its upload-only PreValidation flag is validated and
 discarded. DownloadableOrderData gates HAA; an authenticated unsupported HPD
 response still permits an HAA attempt because HPD is mandatory in H005 but
 deployed behavior may differ.
+HKD validates the complete customer/subscriber document but publishes only BTD
+services, accounts, and per-user permissions. BTU and signature/amount metadata
+are validated then discarded. Account restrictions preserve absent, empty, and
+nonempty meanings and are projected against the exact BTD customer catalog.
 The H005 X002 selection authenticates transaction and encryption metadata, not
 `OrderData` itself, so payload integrity also depends on verified TLS.
 

@@ -15,7 +15,7 @@ interoperability has been demonstrated.
 | Module | Responsibility |
 | --- | --- |
 | `client` | Explicit HEV, INI, HIA, HPB, discovery, trust acceptance, and BTD facade |
-| `backend` | Concrete fixed-operation engine; currently connects HEV, INI, HIA, HPB, HPD, and HAA |
+| `backend` | Concrete fixed-operation engine; currently connects HEV, INI, HIA, HPB, HPD, HAA, and HKD |
 | `models` | Immutable, bounded configuration, descriptor, capability, key, and result values |
 | `orders` | Complete fixed allowlist; no generic order constructor |
 | `interfaces` | Injected keys, bank trust, clock, nonce, leased state, segment spool, streaming sink, and operation-control boundaries |
@@ -26,6 +26,7 @@ interoperability has been demonstrated.
 | `hia` | Exact unsecured HIA request data and two-certificate letter rendering |
 | `hpb` | Exact signed HPB request and bounded untrusted bank-key extraction |
 | `hpd` | Exact segmented HPD transaction and strict bank-parameter discovery |
+| `hkd` | Exact segmented HKD transaction and BTD-only customer/permission discovery |
 | `haa` | Exact segmented HAA transaction and strict service discovery |
 | `x002` | Exact authenticated-node digest and pinned-bank RSA verification |
 | `e002` | Fixed incremental AES-128-CBC order-data decryption |
@@ -65,22 +66,22 @@ The transport protocol receives only a read-only request view plus the
 whole-operation control. The default transport accepts only the protocol core's
 private prepared request type. There is no factory that accepts caller XML or an
 order argument: the current builders construct only exact HEV/H000, INI/H005,
-HIA/H005, HPB/H005, and fixed-phase HPD/HAA H005 requests. Future operations require
+HIA/H005, HPB/H005, and fixed-phase HPD/HAA/HKD H005 requests. Future operations require
 equally specific fixed-shape builders.
 
-`EbicsBackend` completes HEV, INI, HIA, HPB, HPD, and HAA as fixed vertical slices. INI and HIA
+`EbicsBackend` completes HEV, INI, HIA, HPB, HPD, HAA, and HKD as fixed vertical slices. INI and HIA
 request only fixed provider certificate roles, validate their self-signed
 profiles, emit exact compressed unsecured requests, accept deliberately unsigned
 responses only through verified TLS, and return deterministic letter data.
 HPB creates a fresh nonce and timestamp, locally verifies the provider's X002
 signature, bounds E002 decryption and decompression, validates the returned bank
 certificates, and leaves them unusable until explicit out-of-band acceptance.
-HPD runs first, keeps advertised URLs informational, and uses
-DownloadableOrderData only to gate HAA discovery. HPD and HAA authenticate
+HPD runs first, keeps advertised URLs informational, and independently gates
+HAA/HKD through DownloadableOrderData and ClientDataDownload. HPD, HAA, and HKD authenticate
 response control and encryption metadata with the pinned X002 bank key, reject
 replayed transaction IDs, enforce base64-conformant 1 MiB segments and aggregate
 limits, and acknowledge only coherent complete data. H005 does not
-X002-authenticate `OrderData`; HPD/HAA payload integrity therefore also
+X002-authenticate `OrderData`; HPD/HAA/HKD payload integrity therefore also
 depends on verified TLS, and no bank electronic signature is claimed.
 The client performs mandatory HEV negotiation first; missing operation
 dependencies are rejected before the corresponding request is sent. Remaining
@@ -102,7 +103,7 @@ Initialization and downloads are separate workflows:
 
 An authenticated 128-bit bank transaction ID is represented by `TransactionId`
 and globally claimed through `SessionStore`. BTD combines that claim with its
-initial state transition; HPD/HAA claim the ID directly but do not yet implement
+initial state transition; HPD/HAA/HKD claim the ID directly but do not yet implement
 the optional transfer or receipt recovery flow. Every duplicate fails as a
 replay, and claims remain after terminal or completed transactions.
 

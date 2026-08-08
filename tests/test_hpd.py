@@ -34,7 +34,7 @@ from ebics_read.hpd import _parse_hpd_parameters
 _H005 = "urn:org:ebics:H005"
 
 
-def _order_data(*, downloadable: bool = False) -> bytes:
+def _order_data(*, downloadable: bool = False, client_data: bool = True) -> bytes:
     return f"""
     <HPDResponseOrderData xmlns="{_H005}">
       <AccessParams>
@@ -52,7 +52,7 @@ def _order_data(*, downloadable: bool = False) -> bytes:
         </Version>
         <Recovery/>
         <PreValidation supported="false"/>
-        <ClientDataDownload supported="1"/>
+        <ClientDataDownload supported="{str(client_data).lower()}"/>
         <DownloadableOrderData supported="{str(downloadable).lower()}"/>
       </ProtocolParams>
     </HPDResponseOrderData>
@@ -77,13 +77,13 @@ def _discover(backend: EbicsBackend, trusted: TrustedBankKeys) -> CapabilityDisc
 
 
 def test_hpd_downloads_parameters_then_gates_unadvertised_haa() -> None:
-    backend, transport, trusted = _setup(order_data=_order_data())
+    backend, transport, trusted = _setup(order_data=_order_data(client_data=False))
     transport.bank_parameter_timestamp = _NOW
 
     result = _discover(backend, trusted)
 
     assert result.completed_orders == (OrderType.HPD,)
-    assert result.unsupported_orders == (OrderType.HAA,)
+    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD)
     assert result.bank_parameters is not None
     assert result.bank_parameters.updated_at == _NOW
     assert [request.order for request in transport.requests] == [OrderType.HPD] * 3
@@ -105,9 +105,13 @@ def test_hpd_downloads_parameters_then_gates_unadvertised_haa() -> None:
 
 
 def test_hpd_advertisement_aggregates_actual_haa_result() -> None:
-    backend, transport, trusted = _setup(order_data=_order_data(downloadable=True))
+    backend, transport, trusted = _setup(
+        order_data=_order_data(downloadable=True, client_data=False)
+    )
     transport.fragments_by_order = {
-        OrderType.HPD: _fragments(order_data=_order_data(downloadable=True)),
+        OrderType.HPD: _fragments(
+            order_data=_order_data(downloadable=True, client_data=False)
+        ),
         OrderType.HAA: _fragments(order_data=_haa_order_data()),
     }
     transport.transaction_ids_by_order = {
@@ -128,15 +132,19 @@ def test_hpd_advertisement_aggregates_actual_haa_result() -> None:
         OrderType.HAA,
     ]
 
-    backend, transport, trusted = _setup(order_data=_order_data(downloadable=True))
+    backend, transport, trusted = _setup(
+        order_data=_order_data(downloadable=True, client_data=False)
+    )
     transport.fragments_by_order = {
-        OrderType.HPD: _fragments(order_data=_order_data(downloadable=True)),
+        OrderType.HPD: _fragments(
+            order_data=_order_data(downloadable=True, client_data=False)
+        ),
         OrderType.HAA: _fragments(order_data=_haa_order_data()),
     }
     transport.technical_by_order = {OrderType.HAA: "091006"}
     result = _discover(backend, trusted)
     assert result.completed_orders == (OrderType.HPD,)
-    assert result.unsupported_orders == (OrderType.HAA,)
+    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD)
     assert [request.order for request in transport.requests] == [
         OrderType.HPD,
         OrderType.HPD,
@@ -147,20 +155,28 @@ def test_hpd_advertisement_aggregates_actual_haa_result() -> None:
 
 def test_hpd_unsupported_falls_back_to_haa_but_replay_stays_global() -> None:
     backend, transport, trusted = _setup()
-    transport.technical_by_order = {OrderType.HPD: "091006"}
+    transport.technical_by_order = {
+        OrderType.HPD: "091006",
+        OrderType.HKD: "091006",
+    }
     result = _discover(backend, trusted)
     assert result.completed_orders == (OrderType.HAA,)
-    assert result.unsupported_orders == (OrderType.HPD,)
+    assert result.unsupported_orders == (OrderType.HPD, OrderType.HKD)
     assert [request.order for request in transport.requests] == [
         OrderType.HPD,
         OrderType.HAA,
         OrderType.HAA,
         OrderType.HAA,
+        OrderType.HKD,
     ]
 
-    backend, transport, trusted = _setup(order_data=_order_data(downloadable=True))
+    backend, transport, trusted = _setup(
+        order_data=_order_data(downloadable=True, client_data=False)
+    )
     transport.fragments_by_order = {
-        OrderType.HPD: _fragments(order_data=_order_data(downloadable=True)),
+        OrderType.HPD: _fragments(
+            order_data=_order_data(downloadable=True, client_data=False)
+        ),
         OrderType.HAA: _fragments(order_data=_haa_order_data()),
     }
     with pytest.raises(ReplayError):

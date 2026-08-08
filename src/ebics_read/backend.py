@@ -34,6 +34,12 @@ from .haa import (
 )
 from .hev import parse_hev_response
 from .hia import _render_hia_letter
+from .hkd import (
+    _decode_hkd_information,
+    _parse_hkd_initial_response,
+    _parse_hkd_receipt_response,
+    _parse_hkd_transfer_response,
+)
 from .hpb import _parse_hpb_response
 from .hpd import (
     _decode_hpd_parameters,
@@ -220,17 +226,34 @@ class EbicsBackend:
             hpd.bank_parameters is not None
             and not hpd.bank_parameters.downloadable_order_data_supported
         ):
-            return CapabilityDiscovery(
-                completed_orders=hpd.completed_orders,
-                unsupported_orders=(OrderType.HAA,),
-                bank_parameters=hpd.bank_parameters,
+            haa = CapabilityDiscovery(unsupported_orders=(OrderType.HAA,))
+        else:
+            haa = self._discover_haa(
+                bank, subscriber, protocol, trusted_bank_keys, control
             )
-        haa = self._discover_haa(bank, subscriber, protocol, trusted_bank_keys, control)
+        if (
+            hpd.bank_parameters is not None
+            and not hpd.bank_parameters.client_data_download_supported
+        ):
+            hkd = CapabilityDiscovery(unsupported_orders=(OrderType.HKD,))
+        else:
+            hkd = self._discover_hkd(
+                bank, subscriber, protocol, trusted_bank_keys, control
+            )
         return CapabilityDiscovery(
-            services=haa.services,
-            completed_orders=(*hpd.completed_orders, *haa.completed_orders),
-            unsupported_orders=(*hpd.unsupported_orders, *haa.unsupported_orders),
+            services=(*haa.services, *hkd.services),
+            completed_orders=(
+                *hpd.completed_orders,
+                *haa.completed_orders,
+                *hkd.completed_orders,
+            ),
+            unsupported_orders=(
+                *hpd.unsupported_orders,
+                *haa.unsupported_orders,
+                *hkd.unsupported_orders,
+            ),
             bank_parameters=hpd.bank_parameters,
+            customer_information=hkd.customer_information,
         )
 
     def _discover_haa(
@@ -431,6 +454,110 @@ class EbicsBackend:
         )
         return CapabilityDiscovery(
             bank_parameters=parameters, completed_orders=(OrderType.HPD,)
+        )
+
+    def _discover_hkd(
+        self,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+        trusted_bank_keys: TrustedBankKeys,
+        control: OperationControl,
+    ) -> CapabilityDiscovery:
+        if (
+            self.key_provider is None
+            or self.clock is None
+            or self.nonce_source is None
+            or self.session_store is None
+        ):
+            raise ConfigurationError(
+                "HKD requires a key provider, clock, nonce source, and session store"
+            )
+        key_provider = self.key_provider
+        authentication_der = key_provider.certificate_der(KeyPurpose.AUTHENTICATION)
+        encryption_der = key_provider.certificate_der(KeyPurpose.ENCRYPTION)
+        nonce = self.nonce_source.random_bytes(16)
+        if type(nonce) is not bytes or len(nonce) != 16:
+            raise ConfigurationError("HKD nonce source must return exactly 16 bytes")
+        requested_at = self.clock.now()
+        _validate_subscriber_transport_certificates(
+            authentication_der, encryption_der, requested_at
+        )
+        request = _PreparedTransportRequest._for_hkd_initialization(
+            bank,
+            subscriber,
+            protocol,
+            trusted_bank_keys,
+            nonce,
+            requested_at,
+            key_provider,
+            authentication_der,
+        )
+        response = self.transport.exchange(request, control)
+        try:
+            initialization = _parse_hkd_initial_response(
+                response.body,
+                trusted_bank_keys,
+                encryption_der,
+                key_provider,
+                self.xml_limits,
+                self.protocol_limits,
+            )
+        except EbicsReturnCodeError as exc:
+            if exc.technical == "091006" and exc.business == "000000":
+                return CapabilityDiscovery(unsupported_orders=(OrderType.HKD,))
+            raise
+        information = self._download_metadata(
+            initialization,
+            lambda transaction_id, segment_number: (
+                _PreparedTransportRequest._for_hkd_transfer(
+                    bank,
+                    protocol,
+                    transaction_id,
+                    segment_number,
+                    key_provider,
+                    authentication_der,
+                )
+            ),
+            lambda body, transaction_id, segment_number, total_segments: (
+                _parse_hkd_transfer_response(
+                    body,
+                    trusted_bank_keys,
+                    transaction_id,
+                    segment_number,
+                    total_segments,
+                    self.xml_limits,
+                )
+            ),
+            lambda fragments, transaction_key: _decode_hkd_information(
+                fragments,
+                transaction_key,
+                bank.host_id,
+                subscriber.user_id,
+                self.xml_limits,
+                self.protocol_limits,
+            ),
+            lambda transaction_id, receipt: _PreparedTransportRequest._for_hkd_receipt(
+                bank,
+                protocol,
+                transaction_id,
+                receipt,
+                key_provider,
+                authentication_der,
+            ),
+            lambda body, transaction_id, receipt: _parse_hkd_receipt_response(
+                body,
+                trusted_bank_keys,
+                transaction_id,
+                receipt,
+                self.xml_limits,
+            ),
+            control,
+        )
+        return CapabilityDiscovery(
+            services=information.services,
+            completed_orders=(OrderType.HKD,),
+            customer_information=(information,),
         )
 
     def _download_metadata(

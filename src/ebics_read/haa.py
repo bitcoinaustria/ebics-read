@@ -100,7 +100,7 @@ def _build_metadata_initialization_request_xml(
     key_provider: KeyProvider,
     authentication_certificate_der: bytes,
 ) -> bytes:
-    if admin_order not in {"HAA", "HPD"}:
+    if admin_order not in {"HAA", "HPD", "HKD"}:
         raise AssertionError("metadata download order is not fixed and allowlisted")
     if type(protocol) is not NegotiatedProtocol:
         raise TypeError("metadata protocol must be an exact NegotiatedProtocol")

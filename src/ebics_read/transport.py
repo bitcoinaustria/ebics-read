@@ -248,6 +248,41 @@ class _PreparedTransportRequest:
         return request
 
     @classmethod
+    def _for_hkd_initialization(
+        cls,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+        trusted_bank_keys: TrustedBankKeys,
+        nonce: bytes,
+        timestamp: datetime,
+        key_provider: KeyProvider,
+        authentication_certificate_der: bytes,
+    ) -> _PreparedTransportRequest:
+        """Build the fixed H005 HKD download-initialization request."""
+
+        from .hkd import _build_hkd_initialization_request_xml
+
+        request = object.__new__(cls)
+        object.__setattr__(request, "bank", bank)
+        object.__setattr__(
+            request,
+            "body",
+            _build_hkd_initialization_request_xml(
+                bank,
+                subscriber,
+                protocol,
+                trusted_bank_keys,
+                nonce,
+                timestamp,
+                key_provider,
+                authentication_certificate_der,
+            ),
+        )
+        object.__setattr__(request, "order", OrderType.HKD)
+        return request
+
+    @classmethod
     def _for_haa_transfer(
         cls,
         bank: Bank,
@@ -310,6 +345,37 @@ class _PreparedTransportRequest:
         return request
 
     @classmethod
+    def _for_hkd_transfer(
+        cls,
+        bank: Bank,
+        protocol: NegotiatedProtocol,
+        transaction_id: TransactionId,
+        segment_number: int,
+        key_provider: KeyProvider,
+        authentication_certificate_der: bytes,
+    ) -> _PreparedTransportRequest:
+        """Build one fixed H005 HKD download-transfer request."""
+
+        from .hkd import _build_hkd_transfer_request_xml
+
+        request = object.__new__(cls)
+        object.__setattr__(request, "bank", bank)
+        object.__setattr__(
+            request,
+            "body",
+            _build_hkd_transfer_request_xml(
+                bank,
+                protocol,
+                transaction_id,
+                segment_number,
+                key_provider,
+                authentication_certificate_der,
+            ),
+        )
+        object.__setattr__(request, "order", OrderType.HKD)
+        return request
+
+    @classmethod
     def _for_haa_receipt(
         cls,
         bank: Bank,
@@ -369,6 +435,37 @@ class _PreparedTransportRequest:
             ),
         )
         object.__setattr__(request, "order", OrderType.HPD)
+        return request
+
+    @classmethod
+    def _for_hkd_receipt(
+        cls,
+        bank: Bank,
+        protocol: NegotiatedProtocol,
+        transaction_id: TransactionId,
+        receipt: ReceiptKind,
+        key_provider: KeyProvider,
+        authentication_certificate_der: bytes,
+    ) -> _PreparedTransportRequest:
+        """Build one fixed H005 HKD download receipt."""
+
+        from .hkd import _build_hkd_receipt_request_xml
+
+        request = object.__new__(cls)
+        object.__setattr__(request, "bank", bank)
+        object.__setattr__(
+            request,
+            "body",
+            _build_hkd_receipt_request_xml(
+                bank,
+                protocol,
+                transaction_id,
+                receipt,
+                key_provider,
+                authentication_certificate_der,
+            ),
+        )
+        object.__setattr__(request, "order", OrderType.HKD)
         return request
 
 

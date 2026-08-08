@@ -3,22 +3,43 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from lxml import etree
 
 from .errors import ConfigurationError, XmlSecurityError
 from .h005 import H005_NAMESPACE
-from .haa import _parse_btf_descriptor
+from .haa import (
+    _build_haa_receipt_request_xml,
+    _build_haa_transfer_request_xml,
+    _build_metadata_initialization_request_xml,
+    _decode_metadata_order_data,
+    _HaaInitialResponse,
+    _HaaOrderDataFragment,
+    _parse_btf_descriptor,
+    _parse_haa_initial_response,
+    _parse_haa_receipt_response,
+    _parse_haa_transfer_response,
+)
+from .interfaces import KeyProvider
 from .models import (
+    Bank,
     BtfDescriptor,
     CustomerInformation,
     DiscoveredAccount,
     DiscoveredUser,
     DownloadPermission,
+    NegotiatedProtocol,
+    ProtocolLimits,
+    ReceiptKind,
     ServiceCapability,
+    Subscriber,
+    TransactionId,
+    TrustedBankKeys,
 )
 from .orders import OrderType
+from .xml import XmlLimits
 
 _XSI_NAMESPACE = "http://www.w3.org/2001/XMLSchema-instance"
 _SCHEMA_LOCATION = f"{{{_XSI_NAMESPACE}}}schemaLocation"
@@ -28,6 +49,130 @@ _ACCOUNT_NUMBER = re.compile(r"(?:[0-9]{3,10}|[A-Z]{2}[0-9]{2}[A-Za-z0-9]{3,30})
 _BANK_CODE = re.compile(r"(?:[0-9]{8}|[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)")
 _NCNAME = re.compile(r"[A-Za-z_][A-Za-z0-9._-]*")
 _AMOUNT = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]{0,4})?|\.[0-9]{1,4})")
+
+
+def _build_hkd_initialization_request_xml(
+    bank: Bank,
+    subscriber: Subscriber,
+    protocol: NegotiatedProtocol,
+    trusted_bank_keys: TrustedBankKeys,
+    nonce: bytes,
+    timestamp: datetime,
+    key_provider: KeyProvider,
+    authentication_certificate_der: bytes,
+) -> bytes:
+    return _build_metadata_initialization_request_xml(
+        "HKD",
+        bank,
+        subscriber,
+        protocol,
+        trusted_bank_keys,
+        nonce,
+        timestamp,
+        key_provider,
+        authentication_certificate_der,
+    )
+
+
+def _build_hkd_transfer_request_xml(
+    bank: Bank,
+    protocol: NegotiatedProtocol,
+    transaction_id: TransactionId,
+    segment_number: int,
+    key_provider: KeyProvider,
+    authentication_certificate_der: bytes,
+) -> bytes:
+    return _build_haa_transfer_request_xml(
+        bank,
+        protocol,
+        transaction_id,
+        segment_number,
+        key_provider,
+        authentication_certificate_der,
+    )
+
+
+def _build_hkd_receipt_request_xml(
+    bank: Bank,
+    protocol: NegotiatedProtocol,
+    transaction_id: TransactionId,
+    receipt: ReceiptKind,
+    key_provider: KeyProvider,
+    authentication_certificate_der: bytes,
+) -> bytes:
+    return _build_haa_receipt_request_xml(
+        bank,
+        protocol,
+        transaction_id,
+        receipt,
+        key_provider,
+        authentication_certificate_der,
+    )
+
+
+def _parse_hkd_initial_response(
+    response_xml: bytes,
+    trusted_bank_keys: TrustedBankKeys,
+    subscriber_encryption_certificate_der: bytes,
+    key_provider: KeyProvider,
+    xml_limits: XmlLimits,
+    protocol_limits: ProtocolLimits,
+) -> _HaaInitialResponse:
+    return _parse_haa_initial_response(
+        response_xml,
+        trusted_bank_keys,
+        subscriber_encryption_certificate_der,
+        key_provider,
+        xml_limits,
+        protocol_limits,
+    )
+
+
+def _parse_hkd_transfer_response(
+    response_xml: bytes,
+    trusted_bank_keys: TrustedBankKeys,
+    transaction_id: TransactionId,
+    segment_number: int,
+    total_segments: int,
+    xml_limits: XmlLimits,
+) -> _HaaOrderDataFragment:
+    return _parse_haa_transfer_response(
+        response_xml,
+        trusted_bank_keys,
+        transaction_id,
+        segment_number,
+        total_segments,
+        xml_limits,
+    )
+
+
+def _parse_hkd_receipt_response(
+    response_xml: bytes,
+    trusted_bank_keys: TrustedBankKeys,
+    transaction_id: TransactionId,
+    receipt: ReceiptKind,
+    xml_limits: XmlLimits,
+) -> None:
+    _parse_haa_receipt_response(
+        response_xml, trusted_bank_keys, transaction_id, receipt, xml_limits
+    )
+
+
+def _decode_hkd_information(
+    fragments: list[str],
+    transaction_key: bytes,
+    expected_host_id: str,
+    expected_user_id: str,
+    xml_limits: XmlLimits,
+    protocol_limits: ProtocolLimits,
+) -> CustomerInformation:
+    return _parse_hkd_information(
+        _decode_metadata_order_data(
+            fragments, transaction_key, xml_limits, protocol_limits
+        ),
+        expected_host_id,
+        expected_user_id,
+    )
 
 
 def _parse_hkd_information(

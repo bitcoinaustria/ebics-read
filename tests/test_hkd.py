@@ -2,8 +2,28 @@ from __future__ import annotations
 
 import pytest
 from lxml import etree
+from test_haa import (
+    _TRANSACTION_ID,
+    _assert_request_signature,
+    _fragments,
+    _Provider,
+    _setup,
+)
+from test_hpd import _order_data as _hpd_order_data
 
-from ebics_read import ContainerType, CustomerInformation, OrderType, XmlSecurityError
+from ebics_read import (
+    Bank,
+    CapabilityDiscovery,
+    ContainerType,
+    CustomerInformation,
+    EbicsBackend,
+    NegotiatedProtocol,
+    OrderType,
+    ReplayError,
+    Subscriber,
+    TrustedBankKeys,
+    XmlSecurityError,
+)
 from ebics_read.hkd import _parse_hkd_information
 
 _H005 = "urn:org:ebics:H005"
@@ -71,6 +91,113 @@ def _parse(xml: bytes | None = None) -> CustomerInformation:
     return _parse_hkd_information(
         etree.fromstring(xml or _order_data()), "HOST", "CURRENT"
     )
+
+
+def _discover(backend: EbicsBackend, trusted: TrustedBankKeys) -> CapabilityDiscovery:
+    return backend.discover_capabilities(
+        Bank("https://configured-bank.invalid/ebics", "HOST"),
+        Subscriber("PARTNER=1", "CURRENT", "SYSTEM1"),
+        NegotiatedProtocol(),
+        trusted,
+        object(),  # type: ignore[arg-type]
+    )
+
+
+def _discover_hkd(
+    backend: EbicsBackend, trusted: TrustedBankKeys
+) -> CapabilityDiscovery:
+    return backend._discover_hkd(
+        Bank("https://configured-bank.invalid/ebics", "HOST"),
+        Subscriber("PARTNER=1", "CURRENT", "SYSTEM1"),
+        NegotiatedProtocol(),
+        trusted,
+        object(),  # type: ignore[arg-type]
+    )
+
+
+def test_hkd_downloads_and_aggregates_when_hpd_advertises_client_data() -> None:
+    hpd = _hpd_order_data()
+    backend, transport, trusted = _setup(order_data=hpd)
+    transport.fragments_by_order = {
+        OrderType.HPD: _fragments(order_data=hpd),
+        OrderType.HKD: _fragments(order_data=_order_data()),
+    }
+    transport.transaction_ids_by_order = {
+        OrderType.HPD: _TRANSACTION_ID,
+        OrderType.HKD: "22334455667788990011AABBCCDDEEFF",
+    }
+
+    result = _discover(backend, trusted)
+
+    assert result.completed_orders == (OrderType.HPD, OrderType.HKD)
+    assert result.unsupported_orders == (OrderType.HAA,)
+    assert len(result.services) == 1
+    assert len(result.customer_information) == 1
+    assert [request.order for request in transport.requests] == [
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HKD,
+        OrderType.HKD,
+        OrderType.HKD,
+    ]
+    assert all(
+        request.bank.endpoint == "https://configured-bank.invalid/ebics"
+        for request in transport.requests
+    )
+    assert isinstance(backend.key_provider, _Provider)
+    for request in transport.requests:
+        _assert_request_signature(request.body, backend.key_provider.authentication_key)
+
+
+def test_hkd_gate_actual_unsupported_and_global_replay() -> None:
+    hpd_disabled = _hpd_order_data(client_data=False)
+    backend, transport, trusted = _setup(order_data=hpd_disabled)
+    result = _discover(backend, trusted)
+    assert result.completed_orders == (OrderType.HPD,)
+    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD)
+    assert [request.order for request in transport.requests] == [OrderType.HPD] * 3
+
+    hpd = _hpd_order_data()
+    backend, transport, trusted = _setup(order_data=hpd)
+    transport.fragments_by_order = {
+        OrderType.HPD: _fragments(order_data=hpd),
+        OrderType.HKD: _fragments(order_data=_order_data()),
+    }
+    transport.technical_by_order = {OrderType.HKD: "091006"}
+    result = _discover(backend, trusted)
+    assert result.completed_orders == (OrderType.HPD,)
+    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD)
+    assert [request.order for request in transport.requests] == [
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HKD,
+    ]
+
+    backend, transport, trusted = _setup(order_data=hpd)
+    transport.fragments_by_order = {
+        OrderType.HPD: _fragments(order_data=hpd),
+        OrderType.HKD: _fragments(order_data=_order_data()),
+    }
+    with pytest.raises(ReplayError):
+        _discover(backend, trusted)
+    assert [request.order for request in transport.requests] == [
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HKD,
+    ]
+
+
+def test_hkd_complete_invalid_payload_gets_negative_receipt() -> None:
+    invalid = _order_data().replace(b"<PartnerInfo>", b"<Unsupported/><PartnerInfo>", 1)
+    backend, transport, trusted = _setup(order_data=invalid)
+    with pytest.raises(XmlSecurityError, match="root structure"):
+        _discover_hkd(backend, trusted)
+    assert [request.order for request in transport.requests] == [OrderType.HKD] * 3
+    receipt = etree.fromstring(transport.requests[-1].body)
+    assert receipt.findtext(f".//{{{_H005}}}ReceiptCode") == "1"
 
 
 def test_hkd_maps_only_btd_accounts_services_and_user_permissions() -> None:
