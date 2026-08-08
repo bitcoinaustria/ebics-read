@@ -25,6 +25,8 @@ from test_hkd import _setup as _setup_hkd
 from test_hpd import _discover as _discover_hpd
 from test_hpd import _order_data as _hpd_order_data
 from test_hpd import _setup as _setup_hpd
+from test_htd import _discover_htd
+from test_htd import _order_data as _htd_order_data
 
 from ebics_read import Bank, KeyPurpose, NegotiatedProtocol, Subscriber
 from ebics_read.transport import _PreparedTransportRequest
@@ -374,7 +376,17 @@ def test_generated_hpd_transaction_matches_external_official_h005_schemas() -> N
 
 
 @pytest.mark.schema
-def test_generated_hkd_transaction_matches_external_official_h005_schemas() -> None:
+@pytest.mark.parametrize(
+    ("order_data", "discover"),
+    (
+        (_hkd_order_data, _discover_hkd),
+        (_htd_order_data, _discover_htd),
+    ),
+)
+def test_generated_customer_data_transaction_matches_external_official_h005_schemas(
+    order_data,
+    discover,  # type: ignore[no-untyped-def]
+) -> None:
     directory = _official_schema_directory()
     parser = etree.XMLParser(
         resolve_entities=False,
@@ -383,8 +395,9 @@ def test_generated_hkd_transaction_matches_external_official_h005_schemas() -> N
         recover=False,
         huge_tree=False,
     )
-    backend, transport, trusted = _setup_hkd(order_data=_hkd_order_data())
-    _discover_hkd(backend, trusted)
+    data = order_data()
+    backend, transport, trusted = _setup_hkd(order_data=data)
+    discover(backend, trusted)
     request_schema = etree.XMLSchema(
         etree.parse(directory / "ebics_request_H005.xsd", parser)
     )
@@ -421,7 +434,7 @@ def test_generated_hkd_transaction_matches_external_official_h005_schemas() -> N
         response_schema.assertValid(etree.fromstring(response, parser))
     etree.XMLSchema(
         etree.parse(directory / "ebics_orders_H005.xsd", parser)
-    ).assertValid(etree.fromstring(_hkd_order_data(), parser))
+    ).assertValid(etree.fromstring(data, parser))
 
 
 def test_rejects_replacement_h005_schema_bundle(tmp_path: Path) -> None:

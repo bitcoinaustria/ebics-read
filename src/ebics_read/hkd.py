@@ -178,29 +178,43 @@ def _decode_hkd_information(
 def _parse_hkd_information(
     root: etree._Element, expected_host_id: str, expected_user_id: str
 ) -> CustomerInformation:
-    _root(root)
+    return _parse_customer_information(
+        root, expected_host_id, expected_user_id, OrderType.HKD
+    )
+
+
+def _parse_customer_information(
+    root: etree._Element,
+    expected_host_id: str,
+    expected_user_id: str,
+    source_order: OrderType,
+) -> CustomerInformation:
+    if source_order not in {OrderType.HKD, OrderType.HTD}:
+        raise AssertionError("customer-data order is not fixed and allowlisted")
+    _root(root, source_order)
     children = _children(root, attributes_allowed=True)
     if (
         len(children) < 2
         or _name(children[0]) != "PartnerInfo"
         or any(_name(child) != "UserInfo" for child in children[1:])
+        or (source_order is OrderType.HTD and len(children) != 2)
     ):
         raise XmlSecurityError("HKD root structure or element order is invalid")
-    accounts, services, host_id = _partner(children[0], expected_host_id)
+    accounts, services, host_id = _partner(children[0], expected_host_id, source_order)
     account_ids = {account.account_id for account in accounts}
     users = tuple(_user(child, account_ids) for child in children[1:])
     if expected_user_id not in {user.user_id for user in users}:
         raise XmlSecurityError("HKD response omits the requesting subscriber")
     try:
-        return CustomerInformation(OrderType.HKD, host_id, accounts, services, users)
+        return CustomerInformation(source_order, host_id, accounts, services, users)
     except (ConfigurationError, TypeError) as exc:
         raise XmlSecurityError(
             "HKD order data contains inconsistent information"
         ) from exc
 
 
-def _root(root: etree._Element) -> None:
-    if root.tag != f"{{{H005_NAMESPACE}}}HKDResponseOrderData":
+def _root(root: etree._Element, source_order: OrderType) -> None:
+    if root.tag != f"{{{H005_NAMESPACE}}}{source_order.value}ResponseOrderData":
         raise XmlSecurityError("HKD order-data root is invalid")
     if set(root.attrib) - {_SCHEMA_LOCATION}:
         raise XmlSecurityError("HKD order-data root has an unknown attribute")
@@ -216,7 +230,7 @@ def _root(root: etree._Element) -> None:
 
 
 def _partner(
-    element: etree._Element, expected_host_id: str
+    element: etree._Element, expected_host_id: str, source_order: OrderType
 ) -> tuple[tuple[DiscoveredAccount, ...], tuple[ServiceCapability, ...], str]:
     children = _children(element)
     if len(children) < 3 or [_name(child) for child in children[:2]] != [
@@ -243,7 +257,7 @@ def _partner(
         descriptor for _, descriptor in order_information if descriptor is not None
     }
     services = tuple(
-        ServiceCapability(descriptor, OrderType.HKD)
+        ServiceCapability(descriptor, source_order)
         for order, descriptor in order_information
         if order == "BTD" and descriptor is not None
     )

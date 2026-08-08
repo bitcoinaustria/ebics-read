@@ -121,16 +121,19 @@ def test_hkd_downloads_and_aggregates_when_hpd_advertises_client_data() -> None:
     transport.fragments_by_order = {
         OrderType.HPD: _fragments(order_data=hpd),
         OrderType.HKD: _fragments(order_data=_order_data()),
+        OrderType.HTD: _fragments(order_data=_order_data()),
     }
     transport.transaction_ids_by_order = {
         OrderType.HPD: _TRANSACTION_ID,
         OrderType.HKD: "22334455667788990011AABBCCDDEEFF",
+        OrderType.HTD: "33445566778899001122AABBCCDDEEFF",
     }
+    transport.technical_by_order = {OrderType.HTD: "091006"}
 
     result = _discover(backend, trusted)
 
     assert result.completed_orders == (OrderType.HPD, OrderType.HKD)
-    assert result.unsupported_orders == (OrderType.HAA,)
+    assert result.unsupported_orders == (OrderType.HAA, OrderType.HTD)
     assert len(result.services) == 1
     assert len(result.customer_information) == 1
     assert [request.order for request in transport.requests] == [
@@ -140,6 +143,7 @@ def test_hkd_downloads_and_aggregates_when_hpd_advertises_client_data() -> None:
         OrderType.HKD,
         OrderType.HKD,
         OrderType.HKD,
+        OrderType.HTD,
     ]
     assert all(
         request.bank.endpoint == "https://configured-bank.invalid/ebics"
@@ -155,7 +159,7 @@ def test_hkd_gate_actual_unsupported_and_global_replay() -> None:
     backend, transport, trusted = _setup(order_data=hpd_disabled)
     result = _discover(backend, trusted)
     assert result.completed_orders == (OrderType.HPD,)
-    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD)
+    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD, OrderType.HTD)
     assert [request.order for request in transport.requests] == [OrderType.HPD] * 3
 
     hpd = _hpd_order_data()
@@ -163,16 +167,26 @@ def test_hkd_gate_actual_unsupported_and_global_replay() -> None:
     transport.fragments_by_order = {
         OrderType.HPD: _fragments(order_data=hpd),
         OrderType.HKD: _fragments(order_data=_order_data()),
+        OrderType.HTD: _fragments(order_data=_order_data()),
     }
-    transport.technical_by_order = {OrderType.HKD: "091006"}
+    transport.transaction_ids_by_order = {
+        OrderType.HPD: _TRANSACTION_ID,
+        OrderType.HKD: "22334455667788990011AABBCCDDEEFF",
+        OrderType.HTD: "33445566778899001122AABBCCDDEEFF",
+    }
+    transport.technical_by_order = {
+        OrderType.HKD: "091006",
+        OrderType.HTD: "091006",
+    }
     result = _discover(backend, trusted)
     assert result.completed_orders == (OrderType.HPD,)
-    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD)
+    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD, OrderType.HTD)
     assert [request.order for request in transport.requests] == [
         OrderType.HPD,
         OrderType.HPD,
         OrderType.HPD,
         OrderType.HKD,
+        OrderType.HTD,
     ]
 
     backend, transport, trusted = _setup(order_data=hpd)

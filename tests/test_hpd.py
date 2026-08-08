@@ -83,7 +83,7 @@ def test_hpd_downloads_parameters_then_gates_unadvertised_haa() -> None:
     result = _discover(backend, trusted)
 
     assert result.completed_orders == (OrderType.HPD,)
-    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD)
+    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD, OrderType.HTD)
     assert result.bank_parameters is not None
     assert result.bank_parameters.updated_at == _NOW
     assert [request.order for request in transport.requests] == [OrderType.HPD] * 3
@@ -144,7 +144,7 @@ def test_hpd_advertisement_aggregates_actual_haa_result() -> None:
     transport.technical_by_order = {OrderType.HAA: "091006"}
     result = _discover(backend, trusted)
     assert result.completed_orders == (OrderType.HPD,)
-    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD)
+    assert result.unsupported_orders == (OrderType.HAA, OrderType.HKD, OrderType.HTD)
     assert [request.order for request in transport.requests] == [
         OrderType.HPD,
         OrderType.HPD,
@@ -158,16 +158,22 @@ def test_hpd_unsupported_falls_back_to_haa_but_replay_stays_global() -> None:
     transport.technical_by_order = {
         OrderType.HPD: "091006",
         OrderType.HKD: "091006",
+        OrderType.HTD: "091006",
     }
     result = _discover(backend, trusted)
     assert result.completed_orders == (OrderType.HAA,)
-    assert result.unsupported_orders == (OrderType.HPD, OrderType.HKD)
+    assert result.unsupported_orders == (
+        OrderType.HPD,
+        OrderType.HKD,
+        OrderType.HTD,
+    )
     assert [request.order for request in transport.requests] == [
         OrderType.HPD,
         OrderType.HAA,
         OrderType.HAA,
         OrderType.HAA,
         OrderType.HKD,
+        OrderType.HTD,
     ]
 
     backend, transport, trusted = _setup(
