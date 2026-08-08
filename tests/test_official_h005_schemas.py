@@ -19,7 +19,9 @@ from test_haa import _discover as _discover_haa
 from test_haa import _order_data as _haa_order_data
 from test_haa import _response as _haa_response
 from test_haa import _setup as _setup_haa
+from test_hpd import _discover as _discover_hpd
 from test_hpd import _order_data as _hpd_order_data
+from test_hpd import _setup as _setup_hpd
 
 from ebics_read import Bank, KeyPurpose, NegotiatedProtocol, Subscriber
 from ebics_read.transport import _PreparedTransportRequest
@@ -317,7 +319,7 @@ def test_generated_haa_transaction_matches_external_official_h005_schemas() -> N
 
 
 @pytest.mark.schema
-def test_synthetic_hpd_order_data_matches_external_official_h005_schema() -> None:
+def test_generated_hpd_transaction_matches_external_official_h005_schemas() -> None:
     directory = _official_schema_directory()
     parser = etree.XMLParser(
         resolve_entities=False,
@@ -326,6 +328,42 @@ def test_synthetic_hpd_order_data_matches_external_official_h005_schema() -> Non
         recover=False,
         huge_tree=False,
     )
+    backend, transport, trusted = _setup_hpd(order_data=_hpd_order_data())
+    _discover_hpd(backend, trusted)
+    request_schema = etree.XMLSchema(
+        etree.parse(directory / "ebics_request_H005.xsd", parser)
+    )
+    for request in transport.requests:
+        request_schema.assertValid(etree.fromstring(request.body, parser))
+    response_schema = etree.XMLSchema(
+        etree.parse(directory / "ebics_response_H005.xsd", parser)
+    )
+    for response in (
+        _haa_response(
+            transport.bank_key,
+            "Initialisation",
+            transaction_id="00112233445566778899AABBCCDDEEFF",
+            total_segments=2,
+            segment_number=1,
+            fragment=transport.fragments[0],
+            encryption_der=transport.encryption_der,
+        ),
+        _haa_response(
+            transport.bank_key,
+            "Transfer",
+            transaction_id="00112233445566778899AABBCCDDEEFF",
+            total_segments=2,
+            segment_number=2,
+            fragment=transport.fragments[1],
+        ),
+        _haa_response(
+            transport.bank_key,
+            "Receipt",
+            transaction_id="00112233445566778899AABBCCDDEEFF",
+            technical="011000",
+        ),
+    ):
+        response_schema.assertValid(etree.fromstring(response, parser))
     etree.XMLSchema(
         etree.parse(directory / "ebics_orders_H005.xsd", parser)
     ).assertValid(etree.fromstring(_hpd_order_data(), parser))

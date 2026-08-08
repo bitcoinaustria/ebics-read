@@ -35,6 +35,12 @@ from .haa import (
 from .hev import parse_hev_response
 from .hia import _render_hia_letter
 from .hpb import _parse_hpb_response
+from .hpd import (
+    _decode_hpd_parameters,
+    _parse_hpd_initial_response,
+    _parse_hpd_receipt_response,
+    _parse_hpd_transfer_response,
+)
 from .ini import _parse_key_initialization_response, _render_ini_letter
 from .interfaces import (
     BankCertificateProfile,
@@ -209,6 +215,32 @@ class EbicsBackend:
         trusted_bank_keys: TrustedBankKeys,
         control: OperationControl,
     ) -> CapabilityDiscovery:
+        hpd = self._discover_hpd(bank, subscriber, protocol, trusted_bank_keys, control)
+        if (
+            hpd.bank_parameters is not None
+            and not hpd.bank_parameters.downloadable_order_data_supported
+        ):
+            return CapabilityDiscovery(
+                completed_orders=hpd.completed_orders,
+                unsupported_orders=(OrderType.HAA,),
+                bank_parameters=hpd.bank_parameters,
+            )
+        haa = self._discover_haa(bank, subscriber, protocol, trusted_bank_keys, control)
+        return CapabilityDiscovery(
+            services=haa.services,
+            completed_orders=(*hpd.completed_orders, *haa.completed_orders),
+            unsupported_orders=(*hpd.unsupported_orders, *haa.unsupported_orders),
+            bank_parameters=hpd.bank_parameters,
+        )
+
+    def _discover_haa(
+        self,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+        trusted_bank_keys: TrustedBankKeys,
+        control: OperationControl,
+    ) -> CapabilityDiscovery:
         if (
             self.key_provider is None
             or self.clock is None
@@ -298,6 +330,108 @@ class EbicsBackend:
             control,
         )
         return CapabilityDiscovery(services=services, completed_orders=(OrderType.HAA,))
+
+    def _discover_hpd(
+        self,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+        trusted_bank_keys: TrustedBankKeys,
+        control: OperationControl,
+    ) -> CapabilityDiscovery:
+        if (
+            self.key_provider is None
+            or self.clock is None
+            or self.nonce_source is None
+            or self.session_store is None
+        ):
+            raise ConfigurationError(
+                "HPD requires a key provider, clock, nonce source, and session store"
+            )
+        key_provider = self.key_provider
+        authentication_der = key_provider.certificate_der(KeyPurpose.AUTHENTICATION)
+        encryption_der = key_provider.certificate_der(KeyPurpose.ENCRYPTION)
+        nonce = self.nonce_source.random_bytes(16)
+        if type(nonce) is not bytes or len(nonce) != 16:
+            raise ConfigurationError("HPD nonce source must return exactly 16 bytes")
+        requested_at = self.clock.now()
+        _validate_subscriber_transport_certificates(
+            authentication_der, encryption_der, requested_at
+        )
+        request = _PreparedTransportRequest._for_hpd_initialization(
+            bank,
+            subscriber,
+            protocol,
+            trusted_bank_keys,
+            nonce,
+            requested_at,
+            key_provider,
+            authentication_der,
+        )
+        response = self.transport.exchange(request, control)
+        try:
+            initialization = _parse_hpd_initial_response(
+                response.body,
+                trusted_bank_keys,
+                encryption_der,
+                key_provider,
+                self.xml_limits,
+                self.protocol_limits,
+            )
+        except EbicsReturnCodeError as exc:
+            if exc.technical == "091006" and exc.business == "000000":
+                return CapabilityDiscovery(unsupported_orders=(OrderType.HPD,))
+            raise
+        parameters = self._download_metadata(
+            initialization,
+            lambda transaction_id, segment_number: (
+                _PreparedTransportRequest._for_hpd_transfer(
+                    bank,
+                    protocol,
+                    transaction_id,
+                    segment_number,
+                    key_provider,
+                    authentication_der,
+                )
+            ),
+            lambda body, transaction_id, segment_number, total_segments: (
+                _parse_hpd_transfer_response(
+                    body,
+                    trusted_bank_keys,
+                    transaction_id,
+                    segment_number,
+                    total_segments,
+                    self.xml_limits,
+                )
+            ),
+            lambda fragments, transaction_key: _decode_hpd_parameters(
+                fragments,
+                transaction_key,
+                bank.host_id,
+                initialization.bank_parameter_timestamp,
+                self.xml_limits,
+                self.protocol_limits,
+            ),
+            lambda transaction_id, receipt: _PreparedTransportRequest._for_hpd_receipt(
+                bank,
+                protocol,
+                transaction_id,
+                receipt,
+                key_provider,
+                authentication_der,
+            ),
+            lambda body, transaction_id, receipt: _parse_hpd_receipt_response(
+                body,
+                trusted_bank_keys,
+                transaction_id,
+                receipt,
+                self.xml_limits,
+            ),
+            control,
+        )
+        return CapabilityDiscovery(
+            bank_parameters=parameters, completed_orders=(OrderType.HPD,)
+        )
 
     def _download_metadata(
         self,

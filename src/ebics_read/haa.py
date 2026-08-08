@@ -63,6 +63,7 @@ class _HaaInitialResponse:
     total_segments: int
     transaction_key: bytes
     first_fragment: _HaaOrderDataFragment
+    bank_parameter_timestamp: datetime | None
 
 
 def _build_haa_initialization_request_xml(
@@ -75,18 +76,44 @@ def _build_haa_initialization_request_xml(
     key_provider: KeyProvider,
     authentication_certificate_der: bytes,
 ) -> bytes:
+    return _build_metadata_initialization_request_xml(
+        "HAA",
+        bank,
+        subscriber,
+        protocol,
+        trusted_bank_keys,
+        nonce,
+        timestamp,
+        key_provider,
+        authentication_certificate_der,
+    )
+
+
+def _build_metadata_initialization_request_xml(
+    admin_order: str,
+    bank: Bank,
+    subscriber: Subscriber,
+    protocol: NegotiatedProtocol,
+    trusted_bank_keys: TrustedBankKeys,
+    nonce: bytes,
+    timestamp: datetime,
+    key_provider: KeyProvider,
+    authentication_certificate_der: bytes,
+) -> bytes:
+    if admin_order not in {"HAA", "HPD"}:
+        raise AssertionError("metadata download order is not fixed and allowlisted")
     if type(protocol) is not NegotiatedProtocol:
-        raise TypeError("HAA protocol must be an exact NegotiatedProtocol")
+        raise TypeError("metadata protocol must be an exact NegotiatedProtocol")
     if type(trusted_bank_keys) is not TrustedBankKeys:
-        raise TypeError("HAA requires exact TrustedBankKeys")
+        raise TypeError("metadata download requires exact TrustedBankKeys")
     if type(nonce) is not bytes or len(nonce) != 16:
-        raise ConfigurationError("HAA nonce must be exactly 16 bytes")
+        raise ConfigurationError("metadata nonce must be exactly 16 bytes")
     if (
         not isinstance(timestamp, datetime)
         or timestamp.tzinfo is None
         or timestamp.utcoffset() is None
     ):
-        raise ConfigurationError("HAA timestamp must be timezone-aware")
+        raise ConfigurationError("metadata timestamp must be timezone-aware")
 
     root, header, static, mutable = _request_root(bank, protocol)
     etree.SubElement(
@@ -110,7 +137,7 @@ def _build_haa_initialization_request_xml(
     details = etree.SubElement(static, etree.QName(H005_NAMESPACE, "OrderDetails"))
     etree.SubElement(
         details, etree.QName(H005_NAMESPACE, "AdminOrderType")
-    ).text = "HAA"
+    ).text = admin_order
     etree.SubElement(details, etree.QName(H005_NAMESPACE, "StandardOrderParams"))
     digests = etree.SubElement(static, etree.QName(H005_NAMESPACE, "BankPubKeyDigests"))
     _add_bank_digest(
@@ -316,6 +343,7 @@ def _parse_haa_initial_response(
         total_segments,
         transaction_key,
         _read_order_data_fragment(order_data),
+        parsed.bank_parameter_timestamp,
     )
 
 
@@ -515,6 +543,19 @@ def _decode_haa_services(
     xml_limits: XmlLimits,
     protocol_limits: ProtocolLimits,
 ) -> tuple[ServiceCapability, ...]:
+    return _parse_haa_services(
+        _decode_metadata_order_data(
+            fragments, transaction_key, xml_limits, protocol_limits
+        )
+    )
+
+
+def _decode_metadata_order_data(
+    fragments: list[str],
+    transaction_key: bytes,
+    xml_limits: XmlLimits,
+    protocol_limits: ProtocolLimits,
+) -> etree._Element:
     encoded_limit = _encoded_order_data_limit(protocol_limits)
     encoded_size = sum(len(value) for value in fragments)
     if encoded_size > encoded_limit:
@@ -538,7 +579,7 @@ def _decode_haa_services(
     cleartext = _decompress_zlib(compressed, output_limit)
     if len(cleartext) > max(1, len(compressed)) * protocol_limits.max_compression_ratio:
         raise ResponseLimitError("HAA order data exceeds the compression-ratio limit")
-    return _parse_haa_services(parse_xml_document(cleartext, xml_limits))
+    return parse_xml_document(cleartext, xml_limits)
 
 
 def _encoded_order_data_limit(protocol_limits: ProtocolLimits) -> int:

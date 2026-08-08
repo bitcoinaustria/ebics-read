@@ -4,14 +4,37 @@ from datetime import datetime, timezone
 
 import pytest
 from lxml import etree
+from test_haa import (
+    _NOW,
+    _TRANSACTION_ID,
+    _assert_request_signature,
+    _fragments,
+    _Provider,
+    _setup,
+)
+from test_haa import (
+    _order_data as _haa_order_data,
+)
 
-from ebics_read import BankParameters, XmlSecurityError
+from ebics_read import (
+    Bank,
+    BankParameters,
+    CapabilityDiscovery,
+    EbicsBackend,
+    EbicsReturnCodeError,
+    NegotiatedProtocol,
+    OrderType,
+    ReplayError,
+    Subscriber,
+    TrustedBankKeys,
+    XmlSecurityError,
+)
 from ebics_read.hpd import _parse_hpd_parameters
 
 _H005 = "urn:org:ebics:H005"
 
 
-def _order_data() -> bytes:
+def _order_data(*, downloadable: bool = False) -> bytes:
     return f"""
     <HPDResponseOrderData xmlns="{_H005}">
       <AccessParams>
@@ -30,7 +53,7 @@ def _order_data() -> bytes:
         <Recovery/>
         <PreValidation supported="false"/>
         <ClientDataDownload supported="1"/>
-        <DownloadableOrderData supported="0"/>
+        <DownloadableOrderData supported="{str(downloadable).lower()}"/>
       </ProtocolParams>
     </HPDResponseOrderData>
     """.encode()
@@ -41,6 +64,138 @@ def _parse(xml: bytes | None = None) -> BankParameters:
     return _parse_hpd_parameters(
         etree.fromstring(xml or _order_data()), "HOST", updated_at
     )
+
+
+def _discover(backend: EbicsBackend, trusted: TrustedBankKeys) -> CapabilityDiscovery:
+    return backend.discover_capabilities(
+        Bank("https://configured-bank.invalid/ebics", "HOST"),
+        Subscriber("PARTNER=1", "USER,1", "SYSTEM1"),
+        NegotiatedProtocol(),
+        trusted,
+        object(),  # type: ignore[arg-type]
+    )
+
+
+def test_hpd_downloads_parameters_then_gates_unadvertised_haa() -> None:
+    backend, transport, trusted = _setup(order_data=_order_data())
+    transport.bank_parameter_timestamp = _NOW
+
+    result = _discover(backend, trusted)
+
+    assert result.completed_orders == (OrderType.HPD,)
+    assert result.unsupported_orders == (OrderType.HAA,)
+    assert result.bank_parameters is not None
+    assert result.bank_parameters.updated_at == _NOW
+    assert [request.order for request in transport.requests] == [OrderType.HPD] * 3
+    assert all(
+        request.bank.endpoint == "https://configured-bank.invalid/ebics"
+        for request in transport.requests
+    )
+    roots = [etree.fromstring(request.body) for request in transport.requests]
+    assert [root.findtext(f".//{{{_H005}}}TransactionPhase") for root in roots] == [
+        "Initialisation",
+        "Transfer",
+        "Receipt",
+    ]
+    assert roots[0].findtext(f".//{{{_H005}}}AdminOrderType") == "HPD"
+    assert roots[-1].findtext(f".//{{{_H005}}}ReceiptCode") == "0"
+    assert isinstance(backend.key_provider, _Provider)
+    for request in transport.requests:
+        _assert_request_signature(request.body, backend.key_provider.authentication_key)
+
+
+def test_hpd_advertisement_aggregates_actual_haa_result() -> None:
+    backend, transport, trusted = _setup(order_data=_order_data(downloadable=True))
+    transport.fragments_by_order = {
+        OrderType.HPD: _fragments(order_data=_order_data(downloadable=True)),
+        OrderType.HAA: _fragments(order_data=_haa_order_data()),
+    }
+    transport.transaction_ids_by_order = {
+        OrderType.HPD: _TRANSACTION_ID,
+        OrderType.HAA: "11223344556677889900AABBCCDDEEFF",
+    }
+
+    result = _discover(backend, trusted)
+
+    assert result.completed_orders == (OrderType.HPD, OrderType.HAA)
+    assert len(result.services) == 4
+    assert [request.order for request in transport.requests] == [
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HAA,
+        OrderType.HAA,
+        OrderType.HAA,
+    ]
+
+    backend, transport, trusted = _setup(order_data=_order_data(downloadable=True))
+    transport.fragments_by_order = {
+        OrderType.HPD: _fragments(order_data=_order_data(downloadable=True)),
+        OrderType.HAA: _fragments(order_data=_haa_order_data()),
+    }
+    transport.technical_by_order = {OrderType.HAA: "091006"}
+    result = _discover(backend, trusted)
+    assert result.completed_orders == (OrderType.HPD,)
+    assert result.unsupported_orders == (OrderType.HAA,)
+    assert [request.order for request in transport.requests] == [
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HAA,
+    ]
+
+
+def test_hpd_unsupported_falls_back_to_haa_but_replay_stays_global() -> None:
+    backend, transport, trusted = _setup()
+    transport.technical_by_order = {OrderType.HPD: "091006"}
+    result = _discover(backend, trusted)
+    assert result.completed_orders == (OrderType.HAA,)
+    assert result.unsupported_orders == (OrderType.HPD,)
+    assert [request.order for request in transport.requests] == [
+        OrderType.HPD,
+        OrderType.HAA,
+        OrderType.HAA,
+        OrderType.HAA,
+    ]
+
+    backend, transport, trusted = _setup(order_data=_order_data(downloadable=True))
+    transport.fragments_by_order = {
+        OrderType.HPD: _fragments(order_data=_order_data(downloadable=True)),
+        OrderType.HAA: _fragments(order_data=_haa_order_data()),
+    }
+    with pytest.raises(ReplayError):
+        _discover(backend, trusted)
+    assert [request.order for request in transport.requests] == [
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HPD,
+        OrderType.HAA,
+    ]
+
+
+def test_hpd_sends_negative_receipt_for_complete_invalid_parameters() -> None:
+    invalid = _order_data().replace(
+        b"<AccessParams>", b"<Unsupported/><AccessParams>", 1
+    )
+    backend, transport, trusted = _setup(order_data=invalid)
+
+    with pytest.raises(XmlSecurityError, match="structure"):
+        _discover(backend, trusted)
+
+    assert [request.order for request in transport.requests] == [OrderType.HPD] * 3
+    receipt = etree.fromstring(transport.requests[-1].body)
+    assert receipt.findtext(f".//{{{_H005}}}ReceiptCode") == "1"
+
+
+def test_hpd_business_rejection_aborts_without_partial_result_or_receipt() -> None:
+    backend, transport, trusted = _setup(order_data=_order_data(), business="090005")
+    with pytest.raises(EbicsReturnCodeError) as rejected:
+        _discover(backend, trusted)
+    assert (rejected.value.technical, rejected.value.business) == (
+        "000000",
+        "090005",
+    )
+    assert len(transport.requests) == 1
 
 
 def test_hpd_maps_exact_read_relevant_parameters_without_following_urls() -> None:

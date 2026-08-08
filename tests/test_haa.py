@@ -132,6 +132,11 @@ class _Transport:
     business: str = "000000"
     transfer_technical: str | None = None
     tamper_segment: int | None = None
+    fragments_by_order: dict[OrderType, tuple[str, ...]] | None = None
+    transaction_ids_by_order: dict[OrderType, str] | None = None
+    technical_by_order: dict[OrderType, str] | None = None
+    transaction_id: str = _TRANSACTION_ID
+    bank_parameter_timestamp: datetime | None = None
     requests: list[_PreparedTransportRequest] = field(default_factory=list)
 
     def exchange(
@@ -141,15 +146,24 @@ class _Transport:
         root = etree.fromstring(request.body)
         phase = root.findtext(f".//{{{_H005}}}TransactionPhase")
         if phase == "Initialisation":
-            if self.technical != "000000" or self.business != "000000":
+            if self.fragments_by_order is not None:
+                self.fragments = self.fragments_by_order[request.order]
+            if self.transaction_ids_by_order is not None:
+                self.transaction_id = self.transaction_ids_by_order[request.order]
+            technical = (
+                self.technical_by_order.get(request.order, self.technical)
+                if self.technical_by_order is not None
+                else self.technical
+            )
+            if technical != "000000" or self.business != "000000":
                 return TransportResponse(
                     _response(
                         self.bank_key,
                         phase,
                         transaction_id=(
-                            _TRANSACTION_ID if self.technical == "000000" else None
+                            self.transaction_id if technical == "000000" else None
                         ),
-                        technical=self.technical,
+                        technical=technical,
                         business=self.business,
                     )
                 )
@@ -157,11 +171,12 @@ class _Transport:
                 _response(
                     self.bank_key,
                     phase,
-                    transaction_id=_TRANSACTION_ID,
+                    transaction_id=self.transaction_id,
                     total_segments=len(self.fragments),
                     segment_number=1,
                     fragment=self.fragments[0],
                     encryption_der=self.encryption_der,
+                    bank_parameter_timestamp=self.bank_parameter_timestamp,
                 )
             )
         if phase == "Transfer":
@@ -171,7 +186,7 @@ class _Transport:
                     _response(
                         self.bank_key,
                         phase,
-                        transaction_id=_TRANSACTION_ID,
+                        transaction_id=self.transaction_id,
                         segment_number=segment,
                         total_segments=len(self.fragments),
                         technical=self.transfer_technical,
@@ -180,7 +195,7 @@ class _Transport:
             response = _response(
                 self.bank_key,
                 phase,
-                transaction_id=_TRANSACTION_ID,
+                transaction_id=self.transaction_id,
                 segment_number=segment,
                 total_segments=len(self.fragments),
                 fragment=self.fragments[segment - 1],
@@ -198,7 +213,7 @@ class _Transport:
                 _response(
                     self.bank_key,
                     phase,
-                    transaction_id=_TRANSACTION_ID,
+                    transaction_id=self.transaction_id,
                     technical="011000" if code == "0" else "011001",
                 )
             )
@@ -216,6 +231,7 @@ def _response(
     encryption_der: bytes | None = None,
     technical: str = "000000",
     business: str = "000000",
+    bank_parameter_timestamp: datetime | None = None,
 ) -> bytes:
     root = etree.Element(
         etree.QName(_H005, "ebicsResponse"),
@@ -272,6 +288,12 @@ def _response(
     etree.SubElement(
         body, etree.QName(_H005, "ReturnCode"), authenticate="true"
     ).text = business
+    if bank_parameter_timestamp is not None:
+        etree.SubElement(
+            body,
+            etree.QName(_H005, "TimestampBankParameter"),
+            authenticate="true",
+        ).text = bank_parameter_timestamp.isoformat().replace("+00:00", "Z")
     _sign_response(root, bank_key)
     return etree.tostring(root, encoding="UTF-8", xml_declaration=True)
 
@@ -352,8 +374,12 @@ def _order_data(*, invalid: bool = False) -> bytes:
     return etree.tostring(root)
 
 
-def _fragments(*, invalid: bool = False) -> tuple[str, str]:
-    compressed = zlib.compress(_order_data(invalid=invalid))
+def _fragments(
+    *, invalid: bool = False, order_data: bytes | None = None
+) -> tuple[str, str]:
+    compressed = zlib.compress(
+        _order_data(invalid=invalid) if order_data is None else order_data
+    )
     padding_length = 16 - len(compressed) % 16
     padded = compressed + b"\0" * (padding_length - 1) + bytes((padding_length,))
     encryptor = Cipher(
@@ -369,6 +395,7 @@ def _setup(
     technical: str = "000000",
     business: str = "000000",
     limits: ProtocolLimits | None = None,
+    order_data: bytes | None = None,
 ) -> tuple[EbicsBackend, _Transport, TrustedBankKeys]:
     subscriber_key, subscriber_authentication = _certificate(KeyPurpose.AUTHENTICATION)
     _, subscriber_encryption = _certificate(KeyPurpose.ENCRYPTION)
@@ -383,7 +410,7 @@ def _setup(
     transport = _Transport(
         bank_key,
         subscriber_encryption,
-        _fragments(invalid=invalid),
+        _fragments(invalid=invalid, order_data=order_data),
         technical,
         business,
     )
@@ -401,7 +428,7 @@ def _setup(
 
 
 def _discover(backend: EbicsBackend, trusted: TrustedBankKeys) -> CapabilityDiscovery:
-    return backend.discover_capabilities(
+    return backend._discover_haa(
         Bank("https://bank.invalid/ebics", "HOST"),
         Subscriber("PARTNER=1", "USER,1", "SYSTEM1"),
         NegotiatedProtocol(),
