@@ -77,11 +77,13 @@ def test_bank_requires_strict_https_endpoint() -> None:
     ):
         with pytest.raises(ConfigurationError):
             Bank(endpoint, "HOST")
+    with pytest.raises(ConfigurationError, match="H005 limit"):
+        Bank("https://bank.invalid/ebics", "H" * 36)
 
 
 def test_sensitive_models_hide_values_from_repr() -> None:
     bank = Bank("https://bank.invalid/ebics", "HOST-REPR")
-    subscriber = Subscriber("PARTNER-REPR", "USER-REPR")
+    subscriber = Subscriber("PARTNER=REPR", "USER,REPR")
     account = AccountSelector(iban="AT611904300234573201")
     transaction_id = TransactionId("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
     assert "bank.invalid" not in repr(bank)
@@ -89,6 +91,16 @@ def test_sensitive_models_hide_values_from_repr() -> None:
     assert "PARTNER-REPR" not in repr(subscriber)
     assert "AT611" not in repr(account)
     assert "AAAAAAAA" not in repr(transaction_id)
+
+
+def test_subscriber_ids_match_the_h005_and_s002_profile() -> None:
+    assert Subscriber("PARTNER=1", "USER,1", "SYSTEM1")
+    for invalid in ("", "USER-1", "A" * 36):
+        with pytest.raises(ConfigurationError, match="H005 subscriber"):
+            Subscriber("PARTNER", invalid)
+    for invalid in ((None, "USER"), ("PARTNER", None)):
+        with pytest.raises(ConfigurationError, match="H005 subscriber"):
+            Subscriber(*invalid)  # type: ignore[arg-type]
 
 
 def test_transaction_ids_are_exact_typed_128_bit_values() -> None:

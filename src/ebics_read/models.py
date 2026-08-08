@@ -19,6 +19,7 @@ from .orders import DISCOVERY_ORDERS, OrderType
 
 _PROTOCOL_FIELD_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,63}$")
+_H005_SUBSCRIBER_ID = re.compile(r"^[A-Za-z0-9,=]{1,35}$")
 _IBAN = re.compile(r"^[A-Z]{2}[0-9A-Z]{13,32}$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 _SHA256_HEX = re.compile(r"^[0-9A-F]{64}$")
@@ -85,6 +86,8 @@ class Bank:
                 "bank endpoint must be HTTPS without credentials, query, or fragment"
             )
         _require_identifier("host_id", self.host_id)
+        if len(self.host_id) > 35:
+            raise ConfigurationError("host_id exceeds the H005 limit")
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,10 +99,20 @@ class Subscriber:
     system_id: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        _require_identifier("partner_id", self.partner_id)
-        _require_identifier("user_id", self.user_id)
-        if self.system_id is not None:
-            _require_identifier("system_id", self.system_id)
+        for name, value, optional in (
+            ("partner_id", self.partner_id, False),
+            ("user_id", self.user_id, False),
+            ("system_id", self.system_id, True),
+        ):
+            if optional and value is None:
+                continue
+            if (
+                not isinstance(value, str)
+                or _H005_SUBSCRIBER_ID.fullmatch(value) is None
+            ):
+                raise ConfigurationError(
+                    f"{name} must match the H005 subscriber identifier profile"
+                )
 
 
 class ContainerType(str, Enum):
@@ -1177,7 +1190,7 @@ class DiscoveredUser:
     def __post_init__(self) -> None:
         if (
             not isinstance(self.user_id, str)
-            or re.fullmatch(r"[A-Za-z0-9,=]{1,35}", self.user_id) is None
+            or _H005_SUBSCRIBER_ID.fullmatch(self.user_id) is None
         ):
             raise ConfigurationError("user_id is not a valid H005 subscriber ID")
         if type(self.status) is not int or not 0 <= self.status <= 99:
