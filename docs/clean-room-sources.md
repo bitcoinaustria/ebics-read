@@ -228,6 +228,24 @@ text is not vendored.
   - Retrieved artifact SHA-256: `66821162de1e7130c5fb5eedb22140d8d6d013ec51af4550bb095c2a9481a00e`
   - Learned: CBC mode processing
 
+### ZIP format and standard-library processing
+
+Terms assessment: public format documentation and Python standard-library
+documentation used as references; neither artifact is vendored.
+
+- PKWARE `.ZIP File Format Specification`, APPNOTE 6.3.10
+  - URL: https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
+  - Retrieved: 2026-08-08
+  - Retrieved artifact SHA-256: `0b993022a7d320a0bf704e6980bea36fafd17a6066ab994db0a0c16278a50cd6`
+  - Learned: central-directory metadata, general-purpose encryption flag,
+    compression sizes, uncompressed sizes, and external file attributes
+- Python 3 `zipfile` documentation
+  - URL: https://docs.python.org/3/library/zipfile.html
+  - Retrieved: 2026-08-08
+  - Retrieved artifact SHA-256: `17990f5ebeafab1311f6d7b0d874a4f3bea6ae9fabfb38fa307ff6abbfa87095`
+  - Learned: standard-library archive/member inspection, bounded member reads,
+    CRC validation, directory detection, and unsupported/encrypted-member errors
+
 ## Known implementations excluded as protocol sources
 
 Only public landing-page/package metadata retrieved on 2026-07-15 was used for

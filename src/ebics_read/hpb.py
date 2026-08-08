@@ -269,12 +269,12 @@ def _decompress_zlib(data: bytes, maximum_bytes: int) -> bytes:
     try:
         result = inflater.decompress(data, maximum_bytes + 1)
         if len(result) > maximum_bytes or inflater.unconsumed_tail:
-            raise ResponseLimitError("HPB order data exceeds the XML byte limit")
+            raise ResponseLimitError("EBICS order data exceeds its byte limit")
         result += inflater.flush(maximum_bytes + 1 - len(result))
     except zlib.error as exc:
-        raise SecurityError("HPB order data is not one valid zlib stream") from exc
+        raise SecurityError("EBICS order data is not one valid zlib stream") from exc
     if len(result) > maximum_bytes:
-        raise ResponseLimitError("HPB order data exceeds the XML byte limit")
+        raise ResponseLimitError("EBICS order data exceeds its byte limit")
     if not inflater.eof or inflater.unused_data:
-        raise SecurityError("HPB order data is not one complete zlib stream")
+        raise SecurityError("EBICS order data is not one complete zlib stream")
     return result
