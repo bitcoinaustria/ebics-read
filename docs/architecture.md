@@ -23,11 +23,12 @@ interoperability has been demonstrated.
 | `xml` | Hardened untrusted-XML boundary; no protocol-specific interpretation |
 | `hev` | Exact H000 response parsing and H005/03.00 selection input |
 | `h005` | Fixed common response shapes and contextual return-code allowlists |
+| `x002` | Exact authenticated-node digest and pinned-bank RSA verification |
 | `certificates` | Strict selectable X.509 profile validation, separate from OOB trust |
 | `testing` | Deterministic synthetic helpers, never production secrets |
 | `runtime` | Production system clock, CSPRNG nonce source, deadline, and cancellation defaults |
 
-Future protocol-specific request, signature, crypto, compression, and state
+Future protocol-specific request, electronic-signature, crypto, compression, and state
 modules must remain internal. They may compose audited dependencies but may not
 expose generic XML or order execution through `ReadOnlyClient`.
 

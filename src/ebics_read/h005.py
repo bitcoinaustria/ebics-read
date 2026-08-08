@@ -23,6 +23,7 @@ _TIMESTAMP = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})?$"
 )
+_PARSE_TOKEN = object()
 
 # EBICS 3.0.2 Annex 1. Codes are contextual: 091002 has different meanings in
 # technical and business fields, so the allowlists intentionally stay separate.
@@ -112,14 +113,36 @@ class H005ReturnCodes:
     report_text: str = field(repr=False)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class ParsedH005Response:
     """Untrusted common envelope preserved for later X002 verification."""
 
-    root: etree._Element = field(repr=False)
-    header: etree._Element = field(repr=False)
-    body: etree._Element = field(repr=False)
-    return_codes: H005ReturnCodes
+    document: bytes = field(repr=False, init=False)
+    limits: XmlLimits = field(repr=False, init=False)
+    root: etree._Element = field(repr=False, init=False)
+    header: etree._Element = field(repr=False, init=False)
+    body: etree._Element = field(repr=False, init=False)
+    return_codes: H005ReturnCodes = field(init=False)
+
+    def __init__(
+        self,
+        document: bytes,
+        limits: XmlLimits,
+        root: etree._Element,
+        header: etree._Element,
+        body: etree._Element,
+        return_codes: H005ReturnCodes,
+        *,
+        _token: object | None = None,
+    ) -> None:
+        if _token is not _PARSE_TOKEN:
+            raise TypeError("parsed H005 responses require strict envelope parsing")
+        object.__setattr__(self, "document", bytes(document))
+        object.__setattr__(self, "limits", limits)
+        object.__setattr__(self, "root", root)
+        object.__setattr__(self, "header", header)
+        object.__setattr__(self, "body", body)
+        object.__setattr__(self, "return_codes", return_codes)
 
 
 def parse_h005_response(
@@ -132,7 +155,8 @@ def parse_h005_response(
 
     if type(key_management) is not bool:
         raise TypeError("key_management must be a boolean")
-    root = parse_xml_document(response_xml, limits)
+    active_limits = XmlLimits() if limits is None else limits
+    root = parse_xml_document(response_xml, active_limits)
     expected_root = _KEY_MANAGEMENT_ROOT if key_management else _STANDARD_ROOT
     if root.tag != expected_root:
         raise XmlSecurityError("H005 response root or namespace is invalid")
@@ -233,10 +257,13 @@ def parse_h005_response(
     if len(report_text) > 256 or any(value in report_text for value in "\r\n\t"):
         raise XmlSecurityError("H005 report text violates H005 bounds")
     return ParsedH005Response(
+        response_xml,
+        active_limits,
         root,
         header,
         body,
         H005ReturnCodes(technical_code, business_code, report_text),
+        _token=_PARSE_TOKEN,
     )
 
 
@@ -364,10 +391,7 @@ def _return_code(element: etree._Element, known: frozenset[str]) -> str:
 
 
 def _require_authentication_marker(element: etree._Element, field_name: str) -> None:
-    if set(element.attrib) != {"authenticate"} or element.get("authenticate") not in {
-        "true",
-        "1",
-    }:
+    if set(element.attrib) != {"authenticate"} or element.get("authenticate") != "true":
         raise XmlSecurityError(f"H005 response {field_name} must be authenticated")
 
 

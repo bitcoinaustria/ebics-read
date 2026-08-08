@@ -99,10 +99,10 @@ match the bank's out-of-band values.
 
 ## Required controls before protocol completion
 
-- Verify X002 AuthSignature and all authenticated digests before reading
-  response metadata or order data.
-- Select exactly the authenticated nodes required by the normative XPointer;
-  reject wrapping, namespace substitution, missing nodes, and duplicates.
+- Run fixed operation-specific shape and authentication-marker validation before
+  accepting fields from an X002-verified response. The common X002 verifier
+  already fixes the XPointer, algorithms, transforms, element order, digest,
+  canonicalization, and pinned-bank RSA verification.
 - Reject unknown algorithms.
 - Generate a fresh 128-bit nonce and timestamp for every signed initial request;
   treat `EBICS_TX_MESSAGE_REPLAY` as a security failure rather than silently

@@ -38,6 +38,8 @@ Current foundation APIs provide:
 - exact H000 HEV parsing and H005/03.00 selection without H004 fallback;
 - fixed standard/key-management H005 response envelopes with contextual,
   fail-closed technical and business return-code parsing;
+- exact X002 response digest/signature verification against the explicitly
+  pinned bank authentication certificate;
 - a concrete HEV backend joining fixed request construction, bounded HTTPS,
   namespace-preserving XML parsing, and H005 selection;
 - production system-clock, CSPRNG nonce, deadline, and cancellation defaults;
@@ -50,7 +52,7 @@ Current foundation APIs provide:
 
 HEV is the only complete protocol transaction: fixed request construction,
 verified HTTPS exchange, bounded response parsing, and H005 selection. H005
-request construction, authentication, encryption, initialization, discovery,
+request construction, X002 request signing, encryption, initialization, discovery,
 and segmented BTD execution remain unimplemented. Synthetic local-TLS and separately supplied
 official-schema evidence does not establish bank interoperability or conformance.
 

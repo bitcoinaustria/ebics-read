@@ -27,5 +27,6 @@ All notable changes will be recorded here. The project has made no release.
 - Typed HPD parameters and BTD-only HKD/HTD account and subscriber permissions.
 - Request-bound resumable BTD state and deferred, idempotent document publication.
 - Strict common H005 response envelopes and contextual Annex 1 return-code parsing.
+- Exact X002 response authentication using only explicitly pinned bank keys.
 - Architecture, threat-model, protocol-scope, key-lifecycle, interoperability,
   and clean-room source documentation.
