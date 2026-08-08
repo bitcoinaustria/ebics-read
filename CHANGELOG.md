@@ -10,6 +10,8 @@ All notable changes will be recorded here. The project has made no release.
   to `ebics-read`, the Python package to `ebics_read`, and the base exception
   to `EbicsReadError` so the brand describes the structural read-only boundary
   rather than embedding the license name.
+- Raised the `cryptography` dependency floor to 50.0.0 so supported installs do
+  not resolve to the vulnerable 49.0.0 release.
 
 ### Added
 
