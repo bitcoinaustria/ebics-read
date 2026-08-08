@@ -7,8 +7,11 @@ from dataclasses import dataclass, field
 from typing import TypeVar
 
 from .btd import (
+    _decode_btd_payload,
     _download_request_identity,
+    _extract_btd_documents,
     _parse_btd_initial_response,
+    _parse_btd_receipt_response,
     _parse_btd_transfer_response,
 )
 from .certificates import (
@@ -19,8 +22,11 @@ from .certificates import (
 )
 from .errors import (
     AmbiguousInitializationError,
+    AmbiguousTransportError,
     ConfigurationError,
     EbicsReturnCodeError,
+    OperationCancelledError,
+    OperationDeadlineError,
     OperationNotImplementedError,
     ProtocolError,
     ResponseLimitError,
@@ -76,6 +82,9 @@ from .models import (
     Bank,
     BtfDescriptor,
     CapabilityDiscovery,
+    ContainerType,
+    ContentSha256,
+    DocumentStagingId,
     DownloadedDocument,
     DownloadOptions,
     DownloadPhase,
@@ -84,19 +93,35 @@ from .models import (
     NegotiatedProtocol,
     ProtocolLimits,
     ReceiptKind,
+    RetrievalProvenance,
     SegmentReference,
     SessionLease,
+    StagedDocument,
     Subscriber,
     TransactionId,
     TrustedBankKeys,
     UntrustedBankKeys,
     VersionDiscovery,
+    ZipMemberIdentity,
 )
 from .orders import OrderType
 from .transport import EbicsTransport, _PreparedTransportRequest
 from .xml import XmlLimits
 
 _DiscoveryPayload = TypeVar("_DiscoveryPayload")
+
+_BTD_POST_RECEIVE_PHASES = {
+    DownloadPhase.DECRYPTED,
+    DownloadPhase.CONTAINER_VERIFIED,
+    DownloadPhase.DOCUMENTS_STAGED,
+    DownloadPhase.RECEIPT_PENDING,
+    DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
+    DownloadPhase.DOCUMENTS_PUBLISHED,
+    DownloadPhase.RECEIPT_AMBIGUOUS,
+    DownloadPhase.COMPLETE,
+    DownloadPhase.NEGATIVE_COMPLETE,
+}
+_DOCUMENT_CHUNK_BYTES = 64 * 1024
 
 
 def _btd_spool_index(
@@ -125,6 +150,7 @@ def _btd_spool_index(
     elif state.phase in {
         DownloadPhase.SEGMENTS_RECEIVED,
         DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED,
+        *_BTD_POST_RECEIVE_PHASES,
     }:
         if state.total_segments is None:
             raise SessionConflictError("BTD session lacks a segment count")
@@ -145,6 +171,17 @@ def _validate_btd_first_fragment(
     )
     if len(value) > _encoded_order_data_limit(protocol_limits):
         raise ResponseLimitError("BTD encoded order data exceeds the configured limit")
+
+
+def _persist_btd_successor(
+    session_store: SessionStore,
+    lease: SessionLease,
+    state: DownloadSession,
+    successor: DownloadSession,
+) -> DownloadSession:
+    if not session_store.compare_and_swap(lease, state.revision, successor):
+        raise SessionConflictError("BTD state transition raced")
+    return successor
 
 
 @dataclass(frozen=True, slots=True)
@@ -902,6 +939,8 @@ class EbicsBackend:
                     raise SessionConflictError("BTD session initialization raced")
             elif state.request_identity != request_identity:
                 raise SessionConflictError("BTD session belongs to another request")
+            if state.phase in _BTD_POST_RECEIVE_PHASES:
+                return state
             index = _btd_spool_index(state, entries)
             if state.phase is DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED:
                 self._verify_btd_spool(
@@ -1000,19 +1039,13 @@ class EbicsBackend:
                     initialization.transaction_id != state.transaction_id
                     or initialization.total_segments != state.total_segments
                 ):
-                    raise SecurityError(
-                        "BTD bootstrap and session metadata disagree"
-                    )
+                    raise SecurityError("BTD bootstrap and session metadata disagree")
                 _validate_btd_first_fragment(initialization, self.protocol_limits)
                 recorded = state.record_segment(1)
-                if not session_store.compare_and_swap(
-                    lease, state.revision, recorded
-                ):
+                if not session_store.compare_and_swap(lease, state.revision, recorded):
                     raise SessionConflictError("BTD first-segment recovery raced")
                 state = recorded
-                index = _btd_spool_index(
-                    state, segment_store.list_segments(lease)
-                )
+                index = _btd_spool_index(state, segment_store.list_segments(lease))
             if (
                 state.phase is DownloadPhase.RECEIVING_SEGMENTS
                 and state.next_segment in index
@@ -1116,7 +1149,7 @@ class EbicsBackend:
         encryption_der: bytes,
         key_provider: KeyProvider,
         segment_store: SegmentStore,
-    ) -> None:
+    ) -> tuple[bytes, tuple[str, ...]]:
         if state.transaction_id is None or state.total_segments is None:
             raise SessionConflictError("BTD session lost transaction metadata")
         initialization = _parse_btd_initial_response(
@@ -1133,11 +1166,11 @@ class EbicsBackend:
         ):
             raise SecurityError("BTD bootstrap and session metadata disagree")
         _validate_btd_first_fragment(initialization, self.protocol_limits)
-        encoded_size = len(
-            _validate_order_data_fragment(
-                initialization.first_fragment, last=state.total_segments == 1
-            )
+        first_fragment = _validate_order_data_fragment(
+            initialization.first_fragment, last=state.total_segments == 1
         )
+        fragments = [first_fragment]
+        encoded_size = len(first_fragment)
         for segment_number in range(2, state.total_segments + 1):
             fragment = _parse_btd_transfer_response(
                 self._read_btd_response(segment_store, lease, index[segment_number]),
@@ -1147,15 +1180,16 @@ class EbicsBackend:
                 state.total_segments,
                 self.xml_limits,
             )
-            encoded_size += len(
-                _validate_order_data_fragment(
-                    fragment, last=segment_number == state.total_segments
-                )
+            value = _validate_order_data_fragment(
+                fragment, last=segment_number == state.total_segments
             )
+            fragments.append(value)
+            encoded_size += len(value)
             if encoded_size > _encoded_order_data_limit(self.protocol_limits):
                 raise ResponseLimitError(
                     "BTD encoded order data exceeds the configured limit"
                 )
+        return initialization.transaction_key, tuple(fragments)
 
     def _validate_btd_transfer_spool_entry(
         self,
@@ -1199,6 +1233,240 @@ class EbicsBackend:
             raise SecurityError("BTD spool response is empty")
         return b"".join(chunks)
 
+    def _load_btd_documents(
+        self,
+        state: DownloadSession,
+        lease: SessionLease,
+        descriptor: BtfDescriptor,
+        trusted_bank_keys: TrustedBankKeys,
+        encryption_der: bytes,
+        key_provider: KeyProvider,
+        segment_store: SegmentStore,
+    ) -> tuple[tuple[bytes, tuple[ZipMemberIdentity, ...]], ...]:
+        index = _btd_spool_index(state, segment_store.list_segments(lease))
+        transaction_key, fragments = self._verify_btd_spool(
+            state,
+            index,
+            lease,
+            trusted_bank_keys,
+            encryption_der,
+            key_provider,
+            segment_store,
+        )
+        return _extract_btd_documents(
+            _decode_btd_payload(fragments, transaction_key, self.protocol_limits),
+            descriptor.container_type,
+            self.protocol_limits,
+        )
+
+    def _stage_btd_documents(
+        self,
+        state: DownloadSession,
+        documents: tuple[tuple[bytes, tuple[ZipMemberIdentity, ...]], ...],
+        bank: Bank,
+        descriptor: BtfDescriptor,
+        protocol: NegotiatedProtocol,
+        sink: DocumentSink,
+        control: OperationControl,
+    ) -> tuple[StagedDocument, ...]:
+        if state.transaction_id is None or state.total_segments is None:
+            raise SessionConflictError("BTD session lost transaction metadata")
+        if self.clock is None:
+            raise ConfigurationError("BTD requires a clock provider")
+        provenance = RetrievalProvenance(
+            descriptor,
+            protocol,
+            self.clock.now(),
+            ContentSha256.from_bytes(bytes.fromhex(state.transaction_id.value)),
+            state.total_segments,
+            bank.host_id,
+        )
+        staged: list[StagedDocument] = []
+        for position, (content, zip_members) in enumerate(documents, start=1):
+            control.raise_if_cancelled()
+            staging_id = DocumentStagingId.derive(
+                state.request_identity, state.transaction_id, position
+            )
+            content_sha256 = ContentSha256.from_bytes(content)
+            writer = sink.begin(staging_id, provenance)
+            try:
+                for offset in range(0, len(content), _DOCUMENT_CHUNK_BYTES):
+                    control.raise_if_cancelled()
+                    writer.write(content[offset : offset + _DOCUMENT_CHUNK_BYTES])
+                writer.stage(content_sha256, len(content), zip_members)
+            except Exception:
+                writer.abort()
+                raise
+            staged.append(
+                StagedDocument(
+                    staging_id,
+                    provenance,
+                    content_sha256,
+                    len(content),
+                    zip_members,
+                )
+            )
+        return tuple(staged)
+
+    def _send_btd_receipt(
+        self,
+        state: DownloadSession,
+        receipt: ReceiptKind,
+        bank: Bank,
+        protocol: NegotiatedProtocol,
+        trusted_bank_keys: TrustedBankKeys,
+        authentication_der: bytes,
+        key_provider: KeyProvider,
+        session_store: SessionStore,
+        lease: SessionLease,
+        control: OperationControl,
+    ) -> DownloadSession:
+        if state.transaction_id is None:
+            raise SessionConflictError("BTD session lost its transaction ID")
+        transaction_id = state.transaction_id
+        request = _PreparedTransportRequest._for_btd_receipt(
+            bank,
+            protocol,
+            transaction_id,
+            receipt,
+            key_provider,
+            authentication_der,
+        )
+        control.raise_if_cancelled()
+        if self.clock is None:
+            raise ConfigurationError("BTD requires a clock provider")
+        now = self.clock.now()
+        deadline = control.deadline
+        if (
+            now.tzinfo is None
+            or now.utcoffset() is None
+            or deadline.tzinfo is None
+            or deadline.utcoffset() is None
+            or deadline <= now
+        ):
+            raise OperationDeadlineError("BTD operation deadline has expired")
+        pending = (
+            state.mark_positive_receipt_pending()
+            if receipt is ReceiptKind.POSITIVE
+            else state.mark_negative_receipt_pending()
+        )
+        state = _persist_btd_successor(session_store, lease, state, pending)
+        try:
+            response = self.transport.exchange(request, control)
+            _parse_btd_receipt_response(
+                response.body,
+                trusted_bank_keys,
+                transaction_id,
+                receipt,
+                self.xml_limits,
+            )
+        except Exception as exc:
+            try:
+                _persist_btd_successor(
+                    session_store, lease, state, state.mark_receipt_ambiguous()
+                )
+            except SessionConflictError:
+                pass
+            raise AmbiguousTransportError("BTD receipt outcome is ambiguous") from exc
+        verified = state.mark_receipt_response_verified()
+        try:
+            return _persist_btd_successor(session_store, lease, state, verified)
+        except SessionConflictError as exc:
+            raise AmbiguousTransportError(
+                "BTD receipt was verified but local state persistence failed"
+            ) from exc
+
+    def _discard_unpersisted_btd_stages(
+        self,
+        state: DownloadSession,
+        lease: SessionLease,
+        descriptor: BtfDescriptor,
+        trusted_bank_keys: TrustedBankKeys,
+        encryption_der: bytes,
+        key_provider: KeyProvider,
+        segment_store: SegmentStore,
+        sink: DocumentSink,
+    ) -> None:
+        try:
+            documents = self._load_btd_documents(
+                state,
+                lease,
+                descriptor,
+                trusted_bank_keys,
+                encryption_der,
+                key_provider,
+                segment_store,
+            )
+        except ProtocolError:
+            return
+        if state.transaction_id is None:
+            raise SessionConflictError("BTD session lost its transaction ID")
+        for position in range(1, len(documents) + 1):
+            sink.discard(
+                DocumentStagingId.derive(
+                    state.request_identity, state.transaction_id, position
+                )
+            )
+
+    def _finish_negative_btd(
+        self,
+        state: DownloadSession,
+        lease: SessionLease,
+        bank: Bank,
+        descriptor: BtfDescriptor,
+        protocol: NegotiatedProtocol,
+        trusted_bank_keys: TrustedBankKeys,
+        authentication_der: bytes,
+        encryption_der: bytes,
+        key_provider: KeyProvider,
+        session_store: SessionStore,
+        segment_store: SegmentStore,
+        sink: DocumentSink,
+        control: OperationControl,
+    ) -> DownloadSession:
+        try:
+            state = self._send_btd_receipt(
+                state,
+                ReceiptKind.NEGATIVE,
+                bank,
+                protocol,
+                trusted_bank_keys,
+                authentication_der,
+                key_provider,
+                session_store,
+                lease,
+                control,
+            )
+        except AmbiguousTransportError:
+            current = session_store.load(lease)
+            if current is not None:
+                self._discard_unpersisted_btd_stages(
+                    current,
+                    lease,
+                    descriptor,
+                    trusted_bank_keys,
+                    encryption_der,
+                    key_provider,
+                    segment_store,
+                    sink,
+                )
+            segment_store.discard(lease)
+            raise
+        self._discard_unpersisted_btd_stages(
+            state,
+            lease,
+            descriptor,
+            trusted_bank_keys,
+            encryption_der,
+            key_provider,
+            segment_store,
+            sink,
+        )
+        finished = state.finish()
+        state = _persist_btd_successor(session_store, lease, state, finished)
+        segment_store.discard(lease)
+        return state
+
     def download(
         self,
         bank: Bank,
@@ -1211,4 +1479,220 @@ class EbicsBackend:
         sink: DocumentSink,
         control: OperationControl,
     ) -> tuple[DownloadedDocument, ...]:
-        raise OperationNotImplementedError("BTD is not implemented")
+        if not isinstance(descriptor, BtfDescriptor):
+            raise TypeError("BTD descriptor must be a BtfDescriptor")
+        if descriptor.container_type not in {ContainerType.NONE, ContainerType.ZIP}:
+            raise OperationNotImplementedError(
+                "BTD XML and SVC container framing lacks a recorded public "
+                "specification"
+            )
+        received = self._receive_btd_segments(
+            bank,
+            subscriber,
+            protocol,
+            trusted_bank_keys,
+            session_id,
+            descriptor,
+            options,
+            control,
+        )
+        if (
+            self.key_provider is None
+            or self.clock is None
+            or self.nonce_source is None
+            or self.session_store is None
+            or self.segment_store is None
+        ):
+            raise ConfigurationError(
+                "BTD requires key, clock, nonce, session, and segment providers"
+            )
+        key_provider = self.key_provider
+        session_store = self.session_store
+        segment_store = self.segment_store
+        authentication_der = key_provider.certificate_der(KeyPurpose.AUTHENTICATION)
+        encryption_der = key_provider.certificate_der(KeyPurpose.ENCRYPTION)
+        owner_token = self.nonce_source.random_bytes(32)
+        if type(owner_token) is not bytes or len(owner_token) != 32:
+            raise ConfigurationError("BTD lease nonce source must return 32 bytes")
+        control.raise_if_cancelled()
+        lease = session_store.acquire_lease(session_id, owner_token, control.deadline)
+        try:
+            state = session_store.load(lease)
+            if state is None or state.request_identity != received.request_identity:
+                raise SessionConflictError("BTD session changed before processing")
+            while True:
+                if state.phase is DownloadPhase.COMPLETE:
+                    segment_store.discard(lease)
+                    return state.published_documents
+                if state.phase is DownloadPhase.NEGATIVE_COMPLETE:
+                    segment_store.discard(lease)
+                    raise ProtocolError(
+                        "BTD transaction completed with a negative receipt"
+                    )
+                if state.phase is DownloadPhase.FAILED:
+                    segment_store.discard(lease)
+                    raise SessionConflictError("BTD download cannot be resumed")
+                if state.phase is DownloadPhase.RECEIPT_PENDING:
+                    state = _persist_btd_successor(
+                        session_store,
+                        lease,
+                        state,
+                        state.mark_receipt_ambiguous(),
+                    )
+                    if state.receipt_kind is ReceiptKind.NEGATIVE:
+                        self._discard_unpersisted_btd_stages(
+                            state,
+                            lease,
+                            descriptor,
+                            trusted_bank_keys,
+                            encryption_der,
+                            key_provider,
+                            segment_store,
+                            sink,
+                        )
+                        segment_store.discard(lease)
+                    raise AmbiguousTransportError(
+                        "BTD receipt intent survived without a verified response"
+                    )
+                if state.phase is DownloadPhase.RECEIPT_AMBIGUOUS:
+                    if state.receipt_kind is ReceiptKind.NEGATIVE:
+                        self._discard_unpersisted_btd_stages(
+                            state,
+                            lease,
+                            descriptor,
+                            trusted_bank_keys,
+                            encryption_der,
+                            key_provider,
+                            segment_store,
+                            sink,
+                        )
+                        segment_store.discard(lease)
+                    raise AmbiguousTransportError("BTD receipt outcome is ambiguous")
+                if state.phase is DownloadPhase.DOCUMENTS_PUBLISHED:
+                    state = _persist_btd_successor(
+                        session_store, lease, state, state.finish()
+                    )
+                    continue
+                if state.phase is DownloadPhase.RECEIPT_RESPONSE_VERIFIED:
+                    if state.receipt_kind is ReceiptKind.NEGATIVE:
+                        self._discard_unpersisted_btd_stages(
+                            state,
+                            lease,
+                            descriptor,
+                            trusted_bank_keys,
+                            encryption_der,
+                            key_provider,
+                            segment_store,
+                            sink,
+                        )
+                        state = _persist_btd_successor(
+                            session_store, lease, state, state.finish()
+                        )
+                        segment_store.discard(lease)
+                        raise ProtocolError(
+                            "BTD transaction completed with a negative receipt"
+                        )
+                    published: list[DownloadedDocument] = []
+                    for staged_record in state.staged_documents:
+                        control.raise_if_cancelled()
+                        reference = sink.publish(staged_record.staging_id)
+                        published.append(
+                            DownloadedDocument(
+                                staged_record.staging_id,
+                                staged_record.provenance,
+                                staged_record.content_sha256,
+                                staged_record.size_bytes,
+                                reference,
+                                staged_record.zip_members,
+                            )
+                        )
+                    state = _persist_btd_successor(
+                        session_store,
+                        lease,
+                        state,
+                        state.mark_documents_published(tuple(published)),
+                    )
+                    continue
+                if state.phase is DownloadPhase.DOCUMENTS_STAGED:
+                    state = self._send_btd_receipt(
+                        state,
+                        ReceiptKind.POSITIVE,
+                        bank,
+                        protocol,
+                        trusted_bank_keys,
+                        authentication_der,
+                        key_provider,
+                        session_store,
+                        lease,
+                        control,
+                    )
+                    continue
+                if state.phase in {
+                    DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED,
+                    DownloadPhase.DECRYPTED,
+                    DownloadPhase.CONTAINER_VERIFIED,
+                }:
+                    try:
+                        documents = self._load_btd_documents(
+                            state,
+                            lease,
+                            descriptor,
+                            trusted_bank_keys,
+                            encryption_der,
+                            key_provider,
+                            segment_store,
+                        )
+                        if state.phase is DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED:
+                            state = _persist_btd_successor(
+                                session_store, lease, state, state.mark_decrypted()
+                            )
+                        if state.phase is DownloadPhase.DECRYPTED:
+                            state = _persist_btd_successor(
+                                session_store,
+                                lease,
+                                state,
+                                state.mark_container_verified(),
+                            )
+                        if state.phase is DownloadPhase.CONTAINER_VERIFIED:
+                            staged_documents = self._stage_btd_documents(
+                                state,
+                                documents,
+                                bank,
+                                descriptor,
+                                protocol,
+                                sink,
+                                control,
+                            )
+                            state = _persist_btd_successor(
+                                session_store,
+                                lease,
+                                state,
+                                state.mark_documents_staged(staged_documents),
+                            )
+                    except (
+                        OperationCancelledError,
+                        OperationDeadlineError,
+                        SessionConflictError,
+                    ):
+                        raise
+                    except Exception:
+                        self._finish_negative_btd(
+                            state,
+                            lease,
+                            bank,
+                            descriptor,
+                            protocol,
+                            trusted_bank_keys,
+                            authentication_der,
+                            encryption_der,
+                            key_provider,
+                            session_store,
+                            segment_store,
+                            sink,
+                            control,
+                        )
+                        raise
+                    continue
+                raise SessionConflictError("BTD download phase is invalid")
+        finally:
+            session_store.release_lease(lease)

@@ -2,7 +2,7 @@ import inspect
 
 import pytest
 
-from ebics_read import ConfigurationError, EbicsBackend, OperationNotImplementedError
+from ebics_read import ConfigurationError, EbicsBackend
 
 
 class _UnusedTransport:
@@ -21,7 +21,7 @@ def test_unimplemented_allowlisted_operations_fail_before_transport() -> None:
             initialize(value, value, value, value)  # type: ignore[arg-type]
     with pytest.raises(ConfigurationError, match="session store"):
         backend.discover_capabilities(value, value, value, value, value)  # type: ignore[arg-type]
-    with pytest.raises(OperationNotImplementedError):
+    with pytest.raises(TypeError, match="descriptor"):
         backend.download(  # type: ignore[arg-type]
             value, value, value, value, value, value, value, value, value
         )
