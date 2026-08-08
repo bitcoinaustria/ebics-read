@@ -125,6 +125,10 @@ class InMemorySessionStore:
         if state.session_id != lease.session_id:
             raise SessionConflictError("state belongs to another session")
         current = self._states.get(lease.session_id)
+        if current is not None and state.request_identity != current.request_identity:
+            raise SessionConflictError(
+                "generic state update cannot change the download request identity"
+            )
         current_transaction_id = None if current is None else current.transaction_id
         if state.transaction_id != current_transaction_id:
             raise SessionConflictError(
@@ -136,6 +140,11 @@ class InMemorySessionStore:
         required_revision = 0 if current is None else current.revision + 1
         if state.revision != required_revision:
             raise SessionConflictError("state revision does not advance exactly once")
+        if current is None:
+            if state.phase is not DownloadPhase.NEW:
+                raise SessionConflictError("first persisted state must be new")
+        elif not state.is_exact_successor_of(current):
+            raise SessionConflictError("state is not the exact next transition")
         self._states[lease.session_id] = state
         return True
 

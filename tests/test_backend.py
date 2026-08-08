@@ -17,7 +17,7 @@ def test_unimplemented_allowlisted_operations_fail_before_transport() -> None:
         lambda: backend.fetch_bank_keys(value, value, value, value),
         lambda: backend.discover_capabilities(value, value, value, value, value),
         lambda: backend.download(
-            value, value, value, value, value, value, value, value
+            value, value, value, value, value, value, value, value, value
         ),
     )
 

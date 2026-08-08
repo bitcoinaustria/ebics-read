@@ -11,7 +11,8 @@ from .models import (
     AcceptedBankKeyIdentity,
     Bank,
     ContentSha256,
-    DownloadedDocument,
+    DocumentReference,
+    DocumentStagingId,
     DownloadSession,
     RetrievalProvenance,
     SegmentReference,
@@ -92,7 +93,7 @@ class SessionStore(Protocol):
         expected_revision: int | None,
         state: DownloadSession,
     ) -> bool:
-        """Atomically store a non-initialization transition at the expected revision."""
+        """Atomically store only the exact next transition at the expected revision."""
 
     def initialize_transaction(
         self,
@@ -139,18 +140,18 @@ class SegmentStore(Protocol):
 
 
 class DocumentWriter(Protocol):
-    """One atomic sink transaction; partial output is never a document."""
+    """One restartable sink transaction; partial output is never a document."""
 
     def write(self, chunk: bytes) -> None:
         """Append one bounded verified plaintext chunk."""
 
-    def commit(
+    def stage(
         self,
         content_sha256: ContentSha256,
         size_bytes: int,
         zip_members: tuple[ZipMemberIdentity, ...],
-    ) -> DownloadedDocument:
-        """Atomically publish the document and return its small result record."""
+    ) -> None:
+        """Idempotently finish the write while keeping plaintext unpublished."""
 
     def abort(self) -> None:
         """Discard partial plaintext."""
@@ -159,8 +160,16 @@ class DocumentWriter(Protocol):
 class DocumentSink(Protocol):
     """Caller-controlled destination for streaming verified plaintext."""
 
-    def begin(self, provenance: RetrievalProvenance) -> DocumentWriter:
-        """Start an unpublished atomic document transaction."""
+    def begin(
+        self, staging_id: DocumentStagingId, provenance: RetrievalProvenance
+    ) -> DocumentWriter:
+        """Idempotently restart the named unpublished transaction from byte zero."""
+
+    def publish(self, staging_id: DocumentStagingId) -> DocumentReference:
+        """Idempotently publish the named stage after receipt acknowledgement."""
+
+    def discard(self, staging_id: DocumentStagingId) -> None:
+        """Idempotently remove an unpublished stage before terminal failure."""
 
 
 class OperationControl(Protocol):

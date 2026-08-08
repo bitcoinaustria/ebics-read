@@ -30,8 +30,9 @@ Current foundation APIs provide:
 
 - immutable bank, subscriber, BTF, date, account, HPD/HKD/HTD capability, and
   result models;
-- injected key, bank-key trust, transport, clock, nonce, replay-safe session,
-  segment-spool, streaming document-sink, deadline, and cancellation protocols;
+- injected key, bank-key trust, transport, clock, nonce, request-bound replay-safe
+  session, segment-spool, deferred-publication document-sink, deadline, and
+  cancellation protocols;
 - separate certificate fingerprints and normative H005 public-key digests, with
   explicit out-of-band bank-key acceptance only after strict X.509 validation;
 - exact H000 HEV parsing and H005/03.00 selection without H004 fallback;

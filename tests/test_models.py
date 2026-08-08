@@ -12,13 +12,18 @@ from ebics_read import (
     CapabilityDiscovery,
     ConfigurationError,
     ContainerType,
+    ContentSha256,
     CustomerInformation,
     DateRange,
     DiscoveredAccount,
     DiscoveredUser,
+    DocumentReference,
+    DocumentStagingId,
+    DownloadedDocument,
     DownloadOptions,
     DownloadPermission,
     DownloadPhase,
+    DownloadRequestIdentity,
     DownloadSession,
     EbicsPublicKeyDigest,
     InitializationLetter,
@@ -26,7 +31,9 @@ from ebics_read import (
     OrderType,
     ProtocolLimits,
     ProtocolVersion,
+    RetrievalProvenance,
     ServiceCapability,
+    StagedDocument,
     Subscriber,
     TransactionId,
     UnsupportedProtocolVersionError,
@@ -34,6 +41,31 @@ from ebics_read import (
 )
 
 _TRANSACTION_ID = TransactionId("0123456789ABCDEF0123456789ABCDEF")
+_REQUEST_IDENTITY = DownloadRequestIdentity("C" * 64)
+
+
+def _document_pair(segment_count: int = 1) -> tuple[StagedDocument, DownloadedDocument]:
+    descriptor = BtfDescriptor(
+        "EOP", "camt.053", "08", "001", "XML", "STM", ContainerType.NONE
+    )
+    provenance = RetrievalProvenance(
+        descriptor,
+        NegotiatedProtocol(),
+        datetime(2026, 8, 8, tzinfo=timezone.utc),
+        ContentSha256.from_bytes(bytes.fromhex(_TRANSACTION_ID.value)),
+        segment_count,
+        "HOST",
+    )
+    metadata = {
+        "staging_id": DocumentStagingId.derive(_REQUEST_IDENTITY, _TRANSACTION_ID, 1),
+        "provenance": provenance,
+        "content_sha256": ContentSha256.from_bytes(b"document"),
+        "size_bytes": 8,
+    }
+    return (
+        StagedDocument(**metadata),
+        DownloadedDocument(**metadata, sink_reference=DocumentReference("document-1")),
+    )
 
 
 def test_bank_requires_strict_https_endpoint() -> None:
@@ -70,6 +102,19 @@ def test_transaction_ids_are_exact_typed_128_bit_values() -> None:
         TransactionId.from_bytes(b"short")
     with pytest.raises(TypeError):
         TransactionId.from_bytes("not-bytes")  # type: ignore[arg-type]
+    with pytest.raises(ConfigurationError):
+        DownloadRequestIdentity("c" * 64)
+    assert "CCCC" not in repr(_REQUEST_IDENTITY)
+
+    first = DocumentStagingId.derive(_REQUEST_IDENTITY, _TRANSACTION_ID, 1)
+    assert first == DocumentStagingId.derive(_REQUEST_IDENTITY, _TRANSACTION_ID, 1)
+    assert first != DocumentStagingId.derive(
+        _REQUEST_IDENTITY,
+        TransactionId("FEDCBA9876543210FEDCBA9876543210"),
+        1,
+    )
+    with pytest.raises(ConfigurationError):
+        DocumentStagingId.derive(_REQUEST_IDENTITY, _TRANSACTION_ID, 0)
 
 
 def test_btf_descriptor_supports_omitted_and_non_at_scopes() -> None:
@@ -111,7 +156,9 @@ def test_dates_and_accounts_are_typed() -> None:
 
 
 def test_download_state_machine_rejects_skips_and_terminal_reuse() -> None:
-    state = DownloadSession.start("local-session", ProtocolLimits(max_segments=2))
+    state = DownloadSession.start(
+        "local-session", _REQUEST_IDENTITY, ProtocolLimits(max_segments=2)
+    )
     with pytest.raises(ConfigurationError):
         state.record_segment(1)
 
@@ -123,16 +170,69 @@ def test_download_state_machine_rejects_skips_and_terminal_reuse() -> None:
     state = state.record_segment(2)
     assert state.phase is DownloadPhase.SEGMENTS_RECEIVED
     with pytest.raises(ConfigurationError):
-        state.mark_positive_receipt_sent()
+        state.mark_positive_receipt_pending()
     state = state.mark_signatures_and_digests_verified()
     state = state.mark_decrypted()
     state = state.mark_container_verified()
-    state = state.mark_positive_receipt_sent()
-    state = state.mark_receipt_response_verified()
-    state = state.finish()
-    assert state.phase is DownloadPhase.COMPLETE
+    with pytest.raises(ConfigurationError):
+        state.mark_documents_staged(())
+    with pytest.raises(TypeError):
+        state.mark_documents_staged((object(),))  # type: ignore[arg-type]
+    staged, published = _document_pair(2)
+    with pytest.raises(ConfigurationError):
+        DocumentReference("bad\nreference")
+    with pytest.raises(ConfigurationError):
+        state.mark_documents_staged(
+            (
+                replace(
+                    staged,
+                    provenance=replace(
+                        staged.provenance,
+                        transaction_id_sha256=ContentSha256.from_bytes(b"wrong"),
+                    ),
+                ),
+            )
+        )
+    with pytest.raises(ConfigurationError, match="transaction position"):
+        state.mark_documents_staged(
+            (replace(staged, staging_id=DocumentStagingId("F" * 64)),)
+        )
+    state = state.mark_documents_staged((staged,))
     with pytest.raises(ConfigurationError):
         state.fail()
+    state = state.mark_positive_receipt_pending()
+    state = state.mark_receipt_response_verified()
+    with pytest.raises(ConfigurationError):
+        state.finish()
+    with pytest.raises(ConfigurationError):
+        state.mark_documents_published((replace(published, size_bytes=9),))
+    with pytest.raises(ConfigurationError):
+        state.mark_documents_published(
+            (replace(published, staging_id=DocumentStagingId("F" * 64)),)
+        )
+    state = state.mark_documents_published((published,))
+    with pytest.raises(ConfigurationError):
+        DownloadSession.restore(
+            session_id=state.session_id,
+            request_identity=state.request_identity,
+            phase=state.phase,
+            transaction_id=state.transaction_id,
+            next_segment=state.next_segment,
+            total_segments=state.total_segments,
+            max_segments=state.max_segments,
+            revision=state.revision,
+            receipt_kind=state.receipt_kind,
+            staged_documents=state.staged_documents,
+            published_documents=(replace(published, size_bytes=9),),
+        )
+    state = state.finish()
+    assert state.phase is DownloadPhase.COMPLETE
+    assert state.published_documents == (published,)
+    with pytest.raises(ConfigurationError):
+        state.fail()
+
+    with pytest.raises(TypeError):
+        state.is_exact_successor_of(object())  # type: ignore[arg-type]
 
 
 def test_download_state_cannot_be_forged_or_restored_incoherently() -> None:
@@ -143,6 +243,7 @@ def test_download_state_cannot_be_forged_or_restored_incoherently() -> None:
     with pytest.raises(ConfigurationError):
         DownloadSession.restore(
             session_id="session",
+            request_identity=_REQUEST_IDENTITY,
             phase=DownloadPhase.COMPLETE,
             transaction_id=_TRANSACTION_ID,
             next_segment=1,
@@ -153,6 +254,7 @@ def test_download_state_cannot_be_forged_or_restored_incoherently() -> None:
     with pytest.raises(ConfigurationError):
         DownloadSession.restore(
             session_id="session",
+            request_identity=_REQUEST_IDENTITY,
             phase=DownloadPhase.INITIALIZED,
             transaction_id=_TRANSACTION_ID,
             next_segment=2,
@@ -161,18 +263,23 @@ def test_download_state_cannot_be_forged_or_restored_incoherently() -> None:
             revision=1,
         )
     with pytest.raises(ConfigurationError):
-        DownloadSession.start("session", ProtocolLimits(max_segments=1)).initialize(
-            transaction_id=_TRANSACTION_ID, total_segments=2
-        )
+        DownloadSession.start(
+            "session", _REQUEST_IDENTITY, ProtocolLimits(max_segments=1)
+        ).initialize(transaction_id=_TRANSACTION_ID, total_segments=2)
 
 
 def test_negative_receipt_and_ambiguous_receipt_are_explicit() -> None:
-    state = DownloadSession.start("session", ProtocolLimits(max_segments=1))
+    state = DownloadSession.start(
+        "session", _REQUEST_IDENTITY, ProtocolLimits(max_segments=1)
+    )
     state = state.initialize(transaction_id=_TRANSACTION_ID, total_segments=1)
     state = state.record_segment(1)
-    negative = state.mark_negative_receipt_sent()
+    negative = state.mark_negative_receipt_pending()
     ambiguous = negative.mark_receipt_ambiguous()
-    finished = ambiguous.mark_receipt_response_verified().finish()
+    verified = ambiguous.mark_receipt_response_verified()
+    with pytest.raises(ConfigurationError):
+        verified.mark_documents_published((_document_pair()[1],))
+    finished = verified.finish()
     assert finished.phase is DownloadPhase.NEGATIVE_COMPLETE
 
 

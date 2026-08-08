@@ -71,6 +71,7 @@ class ReadOnlyBackend(Protocol):
         subscriber: Subscriber,
         protocol: NegotiatedProtocol,
         trusted_bank_keys: TrustedBankKeys,
+        session_id: str,
         descriptor: BtfDescriptor,
         options: DownloadOptions,
         sink: DocumentSink,
@@ -133,17 +134,21 @@ class ReadOnlyClient:
 
     def download(
         self,
+        session_id: str,
         descriptor: BtfDescriptor,
         sink: DocumentSink,
         control: OperationControl,
         options: DownloadOptions | None = None,
     ) -> tuple[DownloadedDocument, ...]:
+        """Start or resume one caller-identified BTD transaction."""
+
         trusted = self.bank_key_trust_store.require_trusted(self.bank)
         return self.backend.download(
             self.bank,
             self.subscriber,
             self._negotiate(control),
             trusted,
+            session_id,
             descriptor,
             options if options is not None else DownloadOptions(),
             sink,

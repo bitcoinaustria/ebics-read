@@ -103,7 +103,8 @@ constructor or generic transition:
 
 `new -> initialized -> receiving_segments -> segments_received ->`
 `signatures_and_digests_verified -> decrypted -> container_verified ->`
-`positive_receipt_sent -> receipt_response_verified -> complete`
+`documents_staged -> receipt_pending -> receipt_response_verified ->`
+`documents_published -> complete`
 
 A positive receipt is unreachable until all payload acceptance steps complete.
 After all segments arrive, a processing failure may take the explicit negative
@@ -115,14 +116,29 @@ cannot prove that and classifies network interruption as ambiguous. Protocol,
 authentication, and security failures are terminal.
 
 `total_segments` is checked against `ProtocolLimits.max_segments` before a
-session is initialized. `SessionStore` requires an exclusive `SessionLease` and
-compare-and-swap revision for every update. `SegmentStore` keeps sensitive
+session is initialized. Every caller-supplied session ID is bound to a hidden
+`DownloadRequestIdentity`; resumption under different bank, subscriber, key,
+descriptor, or option inputs must produce a different identity and fail.
+`SessionStore` requires an exclusive `SessionLease` and compare-and-swap
+revision for every update. `SegmentStore` keeps sensitive
 partial ciphertext in caller-controlled protected storage and exposes an
 ordered number/reference index so a restarted worker can recover it. `DocumentSink`
-streams into an unpublished atomic writer and returns only a small committed
-result with content SHA-256, sanitized ZIP-member identities, and verified
-retrieval provenance. `OperationControl` supplies a whole-operation deadline
-and cancellation check. Each transport call is bounded by the lesser of its
+streams into an unpublished writer. The writer durably stages accepted
+plaintext; the sink publishes it idempotently only after the positive receipt
+response is authenticated. Each stage has a deterministic ID derived from the
+request identity, authenticated transaction ID, and document position before
+writing, so a crash before its session CAS retries the same idempotent sink
+operation. If staging cannot be persisted, the core discards that ID before a
+terminal failure; after a crash it recomputes and discards the same ID. The sink
+returns only an opaque published-document reference; the
+protocol core remains authoritative for verified provenance, hashes, sizes,
+and ZIP metadata. Receipt intent is persisted in `receipt_pending` before any
+receipt request bytes are sent. Staged and published result records persist in
+the session so either side of publication can resume after a crash. Generic
+session CAS accepts only an exact operation-specific successor state. Results
+contain only a content SHA-256, sanitized ZIP-member identities, and verified
+retrieval provenance. `OperationControl` supplies a whole-operation deadline and
+cancellation check. Each transport call is bounded by the lesser of its
 per-request timeout and remaining operation deadline, with cancellation checks
 before and after blocking I/O. These interfaces are design boundaries; BTD
 execution is not yet implemented.

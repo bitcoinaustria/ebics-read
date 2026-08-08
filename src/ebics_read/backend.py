@@ -79,6 +79,7 @@ class EbicsBackend:
         subscriber: Subscriber,
         protocol: NegotiatedProtocol,
         trusted_bank_keys: TrustedBankKeys,
+        session_id: str,
         descriptor: BtfDescriptor,
         options: DownloadOptions,
         sink: DocumentSink,

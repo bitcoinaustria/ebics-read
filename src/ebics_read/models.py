@@ -235,9 +235,10 @@ class DownloadPhase(str, Enum):
     SIGNATURES_AND_DIGESTS_VERIFIED = "signatures_and_digests_verified"
     DECRYPTED = "decrypted"
     CONTAINER_VERIFIED = "container_verified"
-    POSITIVE_RECEIPT_SENT = "positive_receipt_sent"
-    NEGATIVE_RECEIPT_SENT = "negative_receipt_sent"
+    DOCUMENTS_STAGED = "documents_staged"
+    RECEIPT_PENDING = "receipt_pending"
     RECEIPT_RESPONSE_VERIFIED = "receipt_response_verified"
+    DOCUMENTS_PUBLISHED = "documents_published"
     RECEIPT_AMBIGUOUS = "receipt_ambiguous"
     COMPLETE = "complete"
     NEGATIVE_COMPLETE = "negative_complete"
@@ -249,6 +250,85 @@ class ReceiptKind(str, Enum):
 
     POSITIVE = "positive"
     NEGATIVE = "negative"
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadRequestIdentity:
+    """Sensitive SHA-256 identity binding one resumable local BTD request."""
+
+    sha256_hex: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.sha256_hex, str)
+            or _SHA256_HEX.fullmatch(self.sha256_hex) is None
+        ):
+            raise ConfigurationError(
+                "download request identity must be 64 uppercase hex characters"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentStagingId:
+    """Deterministic idempotency key for one unpublished document."""
+
+    sha256_hex: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.sha256_hex, str)
+            or _SHA256_HEX.fullmatch(self.sha256_hex) is None
+        ):
+            raise ConfigurationError(
+                "document staging ID must be 64 uppercase hex characters"
+            )
+
+    @classmethod
+    def derive(
+        cls,
+        request_identity: DownloadRequestIdentity,
+        transaction_id: TransactionId,
+        document_position: int,
+    ) -> DocumentStagingId:
+        """Bind one stage to its request, authenticated transaction, and position."""
+
+        if not isinstance(request_identity, DownloadRequestIdentity):
+            raise TypeError("request_identity must be a DownloadRequestIdentity")
+        if not isinstance(transaction_id, TransactionId):
+            raise TypeError("transaction_id must be a TransactionId")
+        if (
+            type(document_position) is not int
+            or document_position < 1
+            or document_position > 0xFFFFFFFF
+        ):
+            raise ConfigurationError(
+                "document_position must be between 1 and 4294967295"
+            )
+        digest = sha256(
+            b"ebics-read:document-stage:v1\0"
+            + bytes.fromhex(request_identity.sha256_hex)
+            + bytes.fromhex(transaction_id.value)
+            + document_position.to_bytes(4, "big")
+        )
+        return cls(digest.hexdigest().upper())
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentReference:
+    """Opaque caller-sink reference to one published document."""
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.value, str)
+            or not self.value
+            or len(self.value) > 256
+            or any(ord(character) < 0x20 for character in self.value)
+        ):
+            raise ConfigurationError(
+                "document reference must be bounded printable text"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +360,7 @@ class DownloadSession:
     """Immutable BTD state constructible only through validated transitions."""
 
     session_id: str = field(repr=False, init=False)
+    request_identity: DownloadRequestIdentity = field(repr=False, init=False)
     phase: DownloadPhase = field(init=False)
     transaction_id: TransactionId | None = field(default=None, repr=False)
     next_segment: int = field(init=False)
@@ -287,10 +368,13 @@ class DownloadSession:
     max_segments: int = field(init=False)
     revision: int = field(init=False)
     receipt_kind: ReceiptKind | None = field(init=False)
+    staged_documents: tuple[StagedDocument, ...] = field(repr=False, init=False)
+    published_documents: tuple[DownloadedDocument, ...] = field(repr=False, init=False)
 
     def __init__(
         self,
         session_id: str,
+        request_identity: DownloadRequestIdentity,
         phase: DownloadPhase,
         transaction_id: TransactionId | None,
         next_segment: int,
@@ -298,12 +382,15 @@ class DownloadSession:
         max_segments: int,
         revision: int,
         receipt_kind: ReceiptKind | None,
+        staged_documents: tuple[StagedDocument, ...],
+        published_documents: tuple[DownloadedDocument, ...],
         *,
         _creation_token: object | None = None,
     ) -> None:
         if _creation_token is not _SESSION_CREATION_TOKEN:
             raise TypeError("download sessions are created through state methods")
         object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "request_identity", request_identity)
         object.__setattr__(self, "phase", phase)
         object.__setattr__(self, "transaction_id", transaction_id)
         object.__setattr__(self, "next_segment", next_segment)
@@ -311,7 +398,11 @@ class DownloadSession:
         object.__setattr__(self, "max_segments", max_segments)
         object.__setattr__(self, "revision", revision)
         object.__setattr__(self, "receipt_kind", receipt_kind)
+        object.__setattr__(self, "staged_documents", tuple(staged_documents))
+        object.__setattr__(self, "published_documents", tuple(published_documents))
         _require_identifier("session_id", self.session_id)
+        if not isinstance(self.request_identity, DownloadRequestIdentity):
+            raise TypeError("request_identity must be a DownloadRequestIdentity")
         if not isinstance(self.phase, DownloadPhase):
             raise TypeError("phase must be a DownloadPhase")
         if self.transaction_id is not None and not isinstance(
@@ -339,12 +430,23 @@ class DownloadSession:
             self.receipt_kind, ReceiptKind
         ):
             raise TypeError("receipt_kind must be a ReceiptKind")
+        if not all(
+            isinstance(value, StagedDocument) for value in self.staged_documents
+        ):
+            raise TypeError("staged_documents must contain StagedDocument values")
+        if not all(
+            isinstance(value, DownloadedDocument) for value in self.published_documents
+        ):
+            raise TypeError(
+                "published_documents must contain DownloadedDocument values"
+            )
         self._validate_coherence()
 
     @classmethod
     def _create(
         cls,
         session_id: str,
+        request_identity: DownloadRequestIdentity,
         phase: DownloadPhase,
         transaction_id: TransactionId | None,
         next_segment: int,
@@ -352,9 +454,12 @@ class DownloadSession:
         max_segments: int,
         revision: int,
         receipt_kind: ReceiptKind | None,
+        staged_documents: tuple[StagedDocument, ...],
+        published_documents: tuple[DownloadedDocument, ...],
     ) -> DownloadSession:
         return cls(
             session_id,
+            request_identity,
             phase,
             transaction_id,
             next_segment,
@@ -362,17 +467,25 @@ class DownloadSession:
             max_segments,
             revision,
             receipt_kind,
+            staged_documents,
+            published_documents,
             _creation_token=_SESSION_CREATION_TOKEN,
         )
 
     @classmethod
-    def start(cls, session_id: str, limits: ProtocolLimits) -> DownloadSession:
+    def start(
+        cls,
+        session_id: str,
+        request_identity: DownloadRequestIdentity,
+        limits: ProtocolLimits,
+    ) -> DownloadSession:
         """Start a transaction before a bank transaction ID exists."""
 
         if not isinstance(limits, ProtocolLimits):
             raise TypeError("limits must be ProtocolLimits")
         return cls._create(
             session_id,
+            request_identity,
             DownloadPhase.NEW,
             None,
             1,
@@ -380,6 +493,8 @@ class DownloadSession:
             limits.max_segments,
             0,
             None,
+            (),
+            (),
         )
 
     @classmethod
@@ -387,6 +502,7 @@ class DownloadSession:
         cls,
         *,
         session_id: str,
+        request_identity: DownloadRequestIdentity,
         phase: DownloadPhase,
         transaction_id: TransactionId | None,
         next_segment: int,
@@ -394,11 +510,14 @@ class DownloadSession:
         max_segments: int,
         revision: int,
         receipt_kind: ReceiptKind | None = None,
+        staged_documents: tuple[StagedDocument, ...] = (),
+        published_documents: tuple[DownloadedDocument, ...] = (),
     ) -> DownloadSession:
         """Restore host-persisted state after applying every invariant."""
 
         return cls._create(
             session_id,
+            request_identity,
             phase,
             transaction_id,
             next_segment,
@@ -406,6 +525,8 @@ class DownloadSession:
             max_segments,
             revision,
             receipt_kind,
+            staged_documents,
+            published_documents,
         )
 
     def initialize(
@@ -416,6 +537,7 @@ class DownloadSession:
         self._require_phase(DownloadPhase.NEW)
         return self._create(
             self.session_id,
+            self.request_identity,
             DownloadPhase.INITIALIZED,
             transaction_id,
             1,
@@ -423,6 +545,8 @@ class DownloadSession:
             self.max_segments,
             self.revision + 1,
             None,
+            (),
+            (),
         )
 
     def record_segment(self, segment_number: int) -> DownloadSession:
@@ -465,75 +589,165 @@ class DownloadSession:
         self._require_phase(DownloadPhase.DECRYPTED)
         return self._advance(DownloadPhase.CONTAINER_VERIFIED)
 
-    def mark_positive_receipt_sent(self) -> DownloadSession:
-        """Send code 0 only after the payload is fully acceptable."""
+    def mark_documents_staged(
+        self, documents: tuple[StagedDocument, ...]
+    ) -> DownloadSession:
+        """Persist accepted plaintext identities without publishing plaintext."""
 
         self._require_phase(DownloadPhase.CONTAINER_VERIFIED)
+        if not documents:
+            raise ConfigurationError("at least one staged document is required")
         return self._advance(
-            DownloadPhase.POSITIVE_RECEIPT_SENT,
+            DownloadPhase.DOCUMENTS_STAGED, staged_documents=tuple(documents)
+        )
+
+    def mark_positive_receipt_pending(self) -> DownloadSession:
+        """Persist code 0 intent before any receipt request bytes are sent."""
+
+        self._require_phase(DownloadPhase.DOCUMENTS_STAGED)
+        return self._advance(
+            DownloadPhase.RECEIPT_PENDING,
             receipt_kind=ReceiptKind.POSITIVE,
         )
 
-    def mark_negative_receipt_sent(self) -> DownloadSession:
-        """Send code 1 after complete transfer but failed payload processing."""
+    def mark_negative_receipt_pending(self) -> DownloadSession:
+        """Persist code 1 intent before any receipt request bytes are sent."""
 
         if self.phase not in {
             DownloadPhase.SEGMENTS_RECEIVED,
             DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED,
             DownloadPhase.DECRYPTED,
+            DownloadPhase.CONTAINER_VERIFIED,
         }:
             raise ConfigurationError("negative receipt is not valid in this phase")
         return self._advance(
-            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_PENDING,
             receipt_kind=ReceiptKind.NEGATIVE,
         )
 
     def mark_receipt_ambiguous(self) -> DownloadSession:
         """Record an unknown receipt outcome after transmission began."""
 
-        if self.phase not in {
-            DownloadPhase.POSITIVE_RECEIPT_SENT,
-            DownloadPhase.NEGATIVE_RECEIPT_SENT,
-        }:
-            raise ConfigurationError("receipt ambiguity requires a sent receipt")
+        if self.phase is not DownloadPhase.RECEIPT_PENDING:
+            raise ConfigurationError("receipt ambiguity requires pending receipt I/O")
         return self._advance(DownloadPhase.RECEIPT_AMBIGUOUS)
 
     def mark_receipt_response_verified(self) -> DownloadSession:
         """Record an authenticated response with the expected receipt return code."""
 
         if self.phase not in {
-            DownloadPhase.POSITIVE_RECEIPT_SENT,
-            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_PENDING,
             DownloadPhase.RECEIPT_AMBIGUOUS,
         }:
             raise ConfigurationError("receipt response is not expected in this phase")
         return self._advance(DownloadPhase.RECEIPT_RESPONSE_VERIFIED)
 
+    def mark_documents_published(
+        self, documents: tuple[DownloadedDocument, ...]
+    ) -> DownloadSession:
+        """Persist idempotently published results after a positive receipt."""
+
+        self._require_phase(DownloadPhase.RECEIPT_RESPONSE_VERIFIED)
+        if self.receipt_kind is not ReceiptKind.POSITIVE:
+            raise ConfigurationError("only a positive receipt publishes documents")
+        published = tuple(documents)
+        if len(published) != len(self.staged_documents) or any(
+            (
+                staged.staging_id,
+                staged.provenance,
+                staged.content_sha256,
+                staged.size_bytes,
+                staged.zip_members,
+            )
+            != (
+                document.staging_id,
+                document.provenance,
+                document.content_sha256,
+                document.size_bytes,
+                document.zip_members,
+            )
+            for staged, document in zip(self.staged_documents, published, strict=True)
+        ):
+            raise ConfigurationError(
+                "published documents do not match staged documents"
+            )
+        return self._advance(
+            DownloadPhase.DOCUMENTS_PUBLISHED, published_documents=published
+        )
+
     def finish(self) -> DownloadSession:
         """Finish only after the receipt response has been authenticated."""
 
-        self._require_phase(DownloadPhase.RECEIPT_RESPONSE_VERIFIED)
-        target = (
-            DownloadPhase.COMPLETE
-            if self.receipt_kind is ReceiptKind.POSITIVE
-            else DownloadPhase.NEGATIVE_COMPLETE
-        )
+        if self.receipt_kind is ReceiptKind.POSITIVE:
+            self._require_phase(DownloadPhase.DOCUMENTS_PUBLISHED)
+            target = DownloadPhase.COMPLETE
+        else:
+            self._require_phase(DownloadPhase.RECEIPT_RESPONSE_VERIFIED)
+            target = DownloadPhase.NEGATIVE_COMPLETE
         return self._advance(target)
 
     def fail(self) -> DownloadSession:
-        """Enter terminal failure from a non-terminal state."""
+        """Enter terminal failure after any unpersisted sink stage was discarded."""
 
         if self.phase in {
-            DownloadPhase.POSITIVE_RECEIPT_SENT,
-            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_PENDING,
+            DownloadPhase.DOCUMENTS_STAGED,
             DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
+            DownloadPhase.DOCUMENTS_PUBLISHED,
             DownloadPhase.RECEIPT_AMBIGUOUS,
             DownloadPhase.COMPLETE,
             DownloadPhase.NEGATIVE_COMPLETE,
             DownloadPhase.FAILED,
         }:
             raise ConfigurationError("terminal download session cannot be reused")
-        return self._advance(DownloadPhase.FAILED)
+        return self._advance(
+            DownloadPhase.FAILED, staged_documents=(), published_documents=()
+        )
+
+    def is_exact_successor_of(self, previous: DownloadSession) -> bool:
+        """Validate one generic CAS transition; initialization has its own operation."""
+
+        if not isinstance(previous, DownloadSession):
+            raise TypeError("previous must be a DownloadSession")
+
+        try:
+            if self.phase in {
+                DownloadPhase.RECEIVING_SEGMENTS,
+                DownloadPhase.SEGMENTS_RECEIVED,
+            }:
+                expected = previous.record_segment(previous.next_segment)
+            elif self.phase is DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED:
+                expected = previous.mark_signatures_and_digests_verified()
+            elif self.phase is DownloadPhase.DECRYPTED:
+                expected = previous.mark_decrypted()
+            elif self.phase is DownloadPhase.CONTAINER_VERIFIED:
+                expected = previous.mark_container_verified()
+            elif self.phase is DownloadPhase.DOCUMENTS_STAGED:
+                expected = previous.mark_documents_staged(self.staged_documents)
+            elif self.phase is DownloadPhase.RECEIPT_PENDING:
+                expected = (
+                    previous.mark_positive_receipt_pending()
+                    if self.receipt_kind is ReceiptKind.POSITIVE
+                    else previous.mark_negative_receipt_pending()
+                )
+            elif self.phase is DownloadPhase.RECEIPT_AMBIGUOUS:
+                expected = previous.mark_receipt_ambiguous()
+            elif self.phase is DownloadPhase.RECEIPT_RESPONSE_VERIFIED:
+                expected = previous.mark_receipt_response_verified()
+            elif self.phase is DownloadPhase.DOCUMENTS_PUBLISHED:
+                expected = previous.mark_documents_published(self.published_documents)
+            elif self.phase in {
+                DownloadPhase.COMPLETE,
+                DownloadPhase.NEGATIVE_COMPLETE,
+            }:
+                expected = previous.finish()
+            elif self.phase is DownloadPhase.FAILED:
+                expected = previous.fail()
+            else:
+                return False
+        except (ConfigurationError, TypeError):
+            return False
+        return self == expected
 
     def _advance(
         self,
@@ -541,9 +755,12 @@ class DownloadSession:
         *,
         next_segment: int | None = None,
         receipt_kind: ReceiptKind | None = None,
+        staged_documents: tuple[StagedDocument, ...] | None = None,
+        published_documents: tuple[DownloadedDocument, ...] | None = None,
     ) -> DownloadSession:
         return self._create(
             self.session_id,
+            self.request_identity,
             phase,
             self.transaction_id,
             self.next_segment if next_segment is None else next_segment,
@@ -551,6 +768,12 @@ class DownloadSession:
             self.max_segments,
             self.revision + 1,
             self.receipt_kind if receipt_kind is None else receipt_kind,
+            (self.staged_documents if staged_documents is None else staged_documents),
+            (
+                self.published_documents
+                if published_documents is None
+                else published_documents
+            ),
         )
 
     def _require_phase(self, phase: DownloadPhase) -> None:
@@ -564,6 +787,8 @@ class DownloadSession:
                 or self.total_segments is not None
                 or self.next_segment != 1
                 or self.receipt_kind is not None
+                or self.staged_documents
+                or self.published_documents
             ):
                 raise ConfigurationError("new session contains transaction state")
             return
@@ -572,6 +797,8 @@ class DownloadSession:
                 self.total_segments is not None
                 or self.next_segment != 1
                 or self.receipt_kind is not None
+                or self.staged_documents
+                or self.published_documents
             ):
                 raise ConfigurationError(
                     "failed pre-initialization state is incoherent"
@@ -591,10 +818,11 @@ class DownloadSession:
                 DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED,
                 DownloadPhase.DECRYPTED,
                 DownloadPhase.CONTAINER_VERIFIED,
-                DownloadPhase.POSITIVE_RECEIPT_SENT,
-                DownloadPhase.NEGATIVE_RECEIPT_SENT,
+                DownloadPhase.DOCUMENTS_STAGED,
+                DownloadPhase.RECEIPT_PENDING,
                 DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
                 DownloadPhase.RECEIPT_AMBIGUOUS,
+                DownloadPhase.DOCUMENTS_PUBLISHED,
                 DownloadPhase.COMPLETE,
                 DownloadPhase.NEGATIVE_COMPLETE,
             }
@@ -611,25 +839,89 @@ class DownloadSession:
         ):
             raise ConfigurationError("active session has no remaining segment")
         receipt_phases = {
-            DownloadPhase.POSITIVE_RECEIPT_SENT,
-            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_PENDING,
             DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
             DownloadPhase.RECEIPT_AMBIGUOUS,
+            DownloadPhase.DOCUMENTS_PUBLISHED,
             DownloadPhase.COMPLETE,
             DownloadPhase.NEGATIVE_COMPLETE,
         }
         if (self.phase in receipt_phases) != (self.receipt_kind is not None):
             raise ConfigurationError("receipt state and receipt kind disagree")
-        if (
-            self.phase is DownloadPhase.POSITIVE_RECEIPT_SENT
-            and self.receipt_kind is not ReceiptKind.POSITIVE
+        staged_phases = {
+            DownloadPhase.DOCUMENTS_STAGED,
+            DownloadPhase.DOCUMENTS_PUBLISHED,
+            DownloadPhase.COMPLETE,
+        }
+        if self.phase in {
+            DownloadPhase.RECEIPT_PENDING,
+            DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
+            DownloadPhase.RECEIPT_AMBIGUOUS,
+        }:
+            expects_staged = self.receipt_kind is ReceiptKind.POSITIVE
+        else:
+            expects_staged = self.phase in staged_phases
+        if bool(self.staged_documents) is not expects_staged:
+            raise ConfigurationError("staged documents and transaction phase disagree")
+        if self.staged_documents:
+            staging_ids = [document.staging_id for document in self.staged_documents]
+            if len(staging_ids) != len(set(staging_ids)):
+                raise ConfigurationError("staged document IDs must be unique")
+            if any(
+                document.staging_id
+                != DocumentStagingId.derive(
+                    self.request_identity, self.transaction_id, position
+                )
+                for position, document in enumerate(self.staged_documents, start=1)
+            ):
+                raise ConfigurationError(
+                    "staged document ID does not match its transaction position"
+                )
+            transaction_hash = ContentSha256.from_bytes(
+                bytes.fromhex(self.transaction_id.value)
+            )
+            if any(
+                document.provenance.transaction_id_sha256 != transaction_hash
+                or document.provenance.segment_count != self.total_segments
+                for document in self.staged_documents
+            ):
+                raise ConfigurationError(
+                    "staged document provenance does not match the transaction"
+                )
+        published_phases = {
+            DownloadPhase.DOCUMENTS_PUBLISHED,
+            DownloadPhase.COMPLETE,
+        }
+        if bool(self.published_documents) is not (self.phase in published_phases):
+            raise ConfigurationError(
+                "published documents and transaction phase disagree"
+            )
+        if self.published_documents and len(self.published_documents) != len(
+            self.staged_documents
         ):
-            raise ConfigurationError("positive receipt state has wrong receipt kind")
-        if (
-            self.phase is DownloadPhase.NEGATIVE_RECEIPT_SENT
-            and self.receipt_kind is not ReceiptKind.NEGATIVE
+            raise ConfigurationError("published and staged document counts disagree")
+        if self.published_documents and any(
+            (
+                staged.staging_id,
+                staged.provenance,
+                staged.content_sha256,
+                staged.size_bytes,
+                staged.zip_members,
+            )
+            != (
+                document.staging_id,
+                document.provenance,
+                document.content_sha256,
+                document.size_bytes,
+                document.zip_members,
+            )
+            for staged, document in zip(
+                self.staged_documents, self.published_documents, strict=True
+            )
         ):
-            raise ConfigurationError("negative receipt state has wrong receipt kind")
+            raise ConfigurationError(
+                "published documents do not match staged documents"
+            )
         if (
             self.phase is DownloadPhase.COMPLETE
             and self.receipt_kind is not ReceiptKind.POSITIVE
@@ -1265,26 +1557,48 @@ class InitializationLetter:
 class DownloadedDocument:
     """Small verified result referring to bytes atomically committed by a sink."""
 
+    staging_id: DocumentStagingId = field(repr=False)
     provenance: RetrievalProvenance
     content_sha256: ContentSha256
     size_bytes: int
-    sink_reference: str = field(repr=False)
+    sink_reference: DocumentReference = field(repr=False)
     zip_members: tuple[ZipMemberIdentity, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.staging_id, DocumentStagingId):
+            raise TypeError("staging_id must be a DocumentStagingId")
         if not isinstance(self.provenance, RetrievalProvenance):
             raise TypeError("provenance must be RetrievalProvenance")
         if not isinstance(self.content_sha256, ContentSha256):
             raise TypeError("content_sha256 must be ContentSha256")
         if type(self.size_bytes) is not int or self.size_bytes <= 0:
             raise ConfigurationError("size_bytes must be a positive integer")
-        if (
-            not isinstance(self.sink_reference, str)
-            or not self.sink_reference
-            or len(self.sink_reference) > 256
-            or any(ord(value) < 0x20 for value in self.sink_reference)
-        ):
-            raise ConfigurationError("sink_reference must be bounded printable text")
+        if not isinstance(self.sink_reference, DocumentReference):
+            raise TypeError("sink_reference must be a DocumentReference")
+        object.__setattr__(self, "zip_members", tuple(self.zip_members))
+        if not all(isinstance(value, ZipMemberIdentity) for value in self.zip_members):
+            raise TypeError("zip_members must contain ZipMemberIdentity values")
+
+
+@dataclass(frozen=True, slots=True)
+class StagedDocument:
+    """Verified plaintext held unpublished until receipt acknowledgement."""
+
+    staging_id: DocumentStagingId = field(repr=False)
+    provenance: RetrievalProvenance
+    content_sha256: ContentSha256
+    size_bytes: int
+    zip_members: tuple[ZipMemberIdentity, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.staging_id, DocumentStagingId):
+            raise TypeError("staging_id must be a DocumentStagingId")
+        if not isinstance(self.provenance, RetrievalProvenance):
+            raise TypeError("provenance must be RetrievalProvenance")
+        if not isinstance(self.content_sha256, ContentSha256):
+            raise TypeError("content_sha256 must be ContentSha256")
+        if type(self.size_bytes) is not int or self.size_bytes <= 0:
+            raise ConfigurationError("size_bytes must be a positive integer")
         object.__setattr__(self, "zip_members", tuple(self.zip_members))
         if not all(isinstance(value, ZipMemberIdentity) for value in self.zip_members):
             raise TypeError("zip_members must contain ZipMemberIdentity values")

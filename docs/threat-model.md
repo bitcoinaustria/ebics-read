@@ -73,10 +73,15 @@ match the bank's out-of-band values.
   positive receipt is unreachable until authentication, decryption, and bounded
   container validation have completed; negative and ambiguous receipt outcomes
   have distinct states.
-- Session revisions require lease/CAS storage, partial ciphertext has a protected
-  caller-spool contract with a recoverable number/reference index, documents
-  stream to an atomic sink, and results carry a content hash plus sanitized
-  provenance rather than large in-memory byte tuples. Transport timeouts are
+- Session revisions require lease/CAS storage and each session is bound to a
+  hidden download-request identity. Partial ciphertext has a protected
+  caller-spool contract with a recoverable number/reference index. Verified
+  plaintext is staged under a deterministic idempotency key, then published
+  only after the positive receipt response; both sides of publication are
+  resumable. The sink returns opaque references rather than verified metadata.
+  Receipt intent is persisted before I/O, and generic CAS accepts only exact
+  successor states. Results carry a content hash plus sanitized provenance
+  rather than large in-memory byte tuples. Transport timeouts are
   capped by the operation deadline and cancellation is checked around I/O. The
   same caller control reaches every network-facing method and covers HEV plus
   the operation that follows it.
@@ -103,6 +108,14 @@ match the bank's out-of-band values.
   ZIP members, member paths, member sizes, and compression ratios.
 - Apply phase-specific handling of ambiguous transport outcomes in the future
   executable BTD state machine; never blindly replay them.
+- Derive `DownloadRequestIdentity` from the exact bank, subscriber, negotiated
+  protocol, pinned bank keys, descriptor, and download options before storing
+  or resuming a session.
+- Derive each deterministic `DocumentStagingId` from the bound request identity,
+  globally claimed authenticated transaction ID, and stable document position
+  before beginning sink I/O. If its session transition is not persisted, discard
+  that unpublished stage before terminal failure; recompute and discard it after
+  a crash.
 - Add deterministic official crypto vectors before any live use.
 
 ## Residual risks
