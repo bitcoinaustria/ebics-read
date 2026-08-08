@@ -4,8 +4,12 @@
 
 The host provides three independent keys through `KeyProvider`: signature,
 authentication, and encryption. H005 represents their public material as X.509
-certificates. The core requests only fixed A006, X002, and E002 operations; it
-does not ask providers to execute arbitrary algorithms or export private keys.
+certificates. The core requests only certificates and fixed X002/E002
+operations. It uses the signature role only to obtain the INI certificate. The
+structurally
+read-only operation set never asks the provider to create an A006 business
+signature. X002 signing and E002 transaction-key decryption remain fixed
+provider operations; private keys are never exported.
 
 INI initializes the signature certificate. HIA initializes authentication and
 encryption certificates. Both operations produce initialization-letter data for

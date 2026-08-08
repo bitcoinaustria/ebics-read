@@ -19,6 +19,7 @@ from ebics_read import (
     DownloadOptions,
     EbicsPublicKeyDigest,
     InitializationLetter,
+    KeyProvider,
     NegotiatedProtocol,
     OrderType,
     ProtocolVersion,
@@ -228,6 +229,19 @@ def test_public_client_has_only_explicit_protocol_operations() -> None:
         "btu",
     }
     assert forbidden.isdisjoint(ebics_read.__all__)
+
+
+def test_key_provider_has_no_business_signature_or_generic_crypto_escape() -> None:
+    methods = {
+        name
+        for name, value in inspect.getmembers(KeyProvider, inspect.isfunction)
+        if not name.startswith("_")
+    }
+    assert methods == {
+        "certificate_der",
+        "decrypt_e002_transaction_key",
+        "sign_x002",
+    }
 
 
 def test_every_network_operation_requires_caller_control() -> None:

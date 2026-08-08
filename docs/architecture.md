@@ -50,7 +50,8 @@ rebuilds the signed tree. Python's standard XML APIs do not expose the same
 complete parser control surface.
 
 `cryptography` is selected for strict X.509 parsing, certificate construction in
-synthetic tests, RSA, hashes, and future A006/X002/E002 composition. It delegates
+synthetic tests, RSA, hashes, exact X002 verification, and future E002
+composition. It delegates
 to audited native cryptographic implementations; EBICS Read implements no
 primitive. These are the only runtime dependencies.
 

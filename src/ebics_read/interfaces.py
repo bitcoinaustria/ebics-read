@@ -37,9 +37,6 @@ class KeyProvider(Protocol):
     def certificate_der(self, purpose: KeyPurpose) -> bytes:
         """Return the H005 X.509 certificate for one subscriber key role."""
 
-    def sign_a006(self, message: bytes) -> bytes:
-        """Produce the exact EBICS A006 signature for order data."""
-
     def sign_x002(self, canonical_signed_info: bytes) -> bytes:
         """Produce the exact EBICS X002 AuthSignature value."""
 

@@ -42,14 +42,16 @@ remain separate semantic types even when their bytes happen to be identical.
 
 The implementation must not “modernize” protocol algorithms. The following
 parameters were checked against the accepted official 3.0.2 artifact on
-2026-07-15. Crypto code still requires recorded vectors before implementation:
+2026-07-15. Implemented paths currently have synthetic rather than bank or
+certification evidence:
 
 - E002 uses RSA PKCS#1 v1.5 transaction-key transport, a 16-byte AES key,
   AES-128-CBC, an all-zero IV/ICV, and the specified ANSI X9.23/ISO 10126-2
   block padding.
-- A006 uses the EBICS-specific prehash construction, SHA-256, MGF1/SHA-256,
-  exactly 32 bytes of PSS salt, and trailer byte `0xBC`; generic PSS defaults are
-  not acceptable.
+- A006 identifies the INI signature certificate and may appear in discovery
+  data, but the fixed read-only operation set never signs or uploads business
+  order data. There is therefore no A006 signing operation or generic signing
+  escape hatch.
 - X002 uses Canonical XML 1.0, RSA/SHA-256 PKCS#1 v1.5, SHA-256 digests, and the
   exact authenticated-node XPointer semantics. A general XMLDSig verifier may
   not choose references on EBICS Read's behalf.
