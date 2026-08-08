@@ -170,6 +170,10 @@ def test_dates_and_accounts_are_typed() -> None:
     )
     assert options.date_range is not None
     with pytest.raises(TypeError):
+        DateRange(  # type: ignore[arg-type]
+            datetime(2026, 1, 1, tzinfo=timezone.utc), date(2026, 1, 31)
+        )
+    with pytest.raises(TypeError):
         DownloadOptions(date_range="2026-01")  # type: ignore[arg-type]
 
 

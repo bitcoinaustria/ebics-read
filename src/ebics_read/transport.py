@@ -30,6 +30,8 @@ from .errors import (
 from .interfaces import Clock, KeyProvider, OperationControl
 from .models import (
     Bank,
+    BtfDescriptor,
+    DownloadOptions,
     NegotiatedProtocol,
     ReceiptKind,
     Subscriber,
@@ -318,6 +320,45 @@ class _PreparedTransportRequest:
         return request
 
     @classmethod
+    def _for_btd_initialization(
+        cls,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+        trusted_bank_keys: TrustedBankKeys,
+        descriptor: BtfDescriptor,
+        options: DownloadOptions,
+        nonce: bytes,
+        timestamp: datetime,
+        key_provider: KeyProvider,
+        authentication_certificate_der: bytes,
+    ) -> _PreparedTransportRequest:
+        """Build the fixed H005 BTD download-initialization request."""
+
+        from .btd import _build_btd_initialization_request_xml
+
+        request = object.__new__(cls)
+        object.__setattr__(request, "bank", bank)
+        object.__setattr__(
+            request,
+            "body",
+            _build_btd_initialization_request_xml(
+                bank,
+                subscriber,
+                protocol,
+                trusted_bank_keys,
+                descriptor,
+                options,
+                nonce,
+                timestamp,
+                key_provider,
+                authentication_certificate_der,
+            ),
+        )
+        object.__setattr__(request, "order", OrderType.BTD)
+        return request
+
+    @classmethod
     def _for_haa_transfer(
         cls,
         bank: Bank,
@@ -442,6 +483,37 @@ class _PreparedTransportRequest:
         return request
 
     @classmethod
+    def _for_btd_transfer(
+        cls,
+        bank: Bank,
+        protocol: NegotiatedProtocol,
+        transaction_id: TransactionId,
+        segment_number: int,
+        key_provider: KeyProvider,
+        authentication_certificate_der: bytes,
+    ) -> _PreparedTransportRequest:
+        """Build one fixed H005 BTD download-transfer request."""
+
+        from .btd import _build_btd_transfer_request_xml
+
+        request = object.__new__(cls)
+        object.__setattr__(request, "bank", bank)
+        object.__setattr__(
+            request,
+            "body",
+            _build_btd_transfer_request_xml(
+                bank,
+                protocol,
+                transaction_id,
+                segment_number,
+                key_provider,
+                authentication_certificate_der,
+            ),
+        )
+        object.__setattr__(request, "order", OrderType.BTD)
+        return request
+
+    @classmethod
     def _for_haa_receipt(
         cls,
         bank: Bank,
@@ -563,6 +635,37 @@ class _PreparedTransportRequest:
             ),
         )
         object.__setattr__(request, "order", OrderType.HTD)
+        return request
+
+    @classmethod
+    def _for_btd_receipt(
+        cls,
+        bank: Bank,
+        protocol: NegotiatedProtocol,
+        transaction_id: TransactionId,
+        receipt: ReceiptKind,
+        key_provider: KeyProvider,
+        authentication_certificate_der: bytes,
+    ) -> _PreparedTransportRequest:
+        """Build one fixed H005 BTD download receipt."""
+
+        from .btd import _build_btd_receipt_request_xml
+
+        request = object.__new__(cls)
+        object.__setattr__(request, "bank", bank)
+        object.__setattr__(
+            request,
+            "body",
+            _build_btd_receipt_request_xml(
+                bank,
+                protocol,
+                transaction_id,
+                receipt,
+                key_provider,
+                authentication_certificate_der,
+            ),
+        )
+        object.__setattr__(request, "order", OrderType.BTD)
         return request
 
 

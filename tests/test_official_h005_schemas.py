@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import NameOID
 from lxml import etree
+from test_btd import _initialization_request as _btd_initialization_request
 from test_haa import _discover as _discover_haa
 from test_haa import _order_data as _haa_order_data
 from test_haa import _response as _haa_response
@@ -28,7 +29,14 @@ from test_hpd import _setup as _setup_hpd
 from test_htd import _discover_htd
 from test_htd import _order_data as _htd_order_data
 
-from ebics_read import Bank, KeyPurpose, NegotiatedProtocol, Subscriber
+from ebics_read import (
+    Bank,
+    KeyPurpose,
+    NegotiatedProtocol,
+    ReceiptKind,
+    Subscriber,
+    TransactionId,
+)
 from ebics_read.transport import _PreparedTransportRequest
 
 _OFFICIAL_SCHEMA_SHA256 = {
@@ -435,6 +443,43 @@ def test_generated_customer_data_transaction_matches_external_official_h005_sche
     etree.XMLSchema(
         etree.parse(directory / "ebics_orders_H005.xsd", parser)
     ).assertValid(etree.fromstring(data, parser))
+
+
+@pytest.mark.schema
+def test_generated_btd_requests_match_external_official_h005_schema() -> None:
+    directory = _official_schema_directory()
+    parser = etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        recover=False,
+        huge_tree=False,
+    )
+    initialization, provider = _btd_initialization_request()
+    bank = Bank("https://bank.invalid/ebics", "HOST")
+    transaction_id = TransactionId("00112233445566778899AABBCCDDEEFF")
+    requests = (
+        initialization,
+        _PreparedTransportRequest._for_btd_transfer(
+            bank,
+            NegotiatedProtocol(),
+            transaction_id,
+            2,
+            provider,
+            provider.certificate_der(KeyPurpose.AUTHENTICATION),
+        ),
+        _PreparedTransportRequest._for_btd_receipt(
+            bank,
+            NegotiatedProtocol(),
+            transaction_id,
+            ReceiptKind.POSITIVE,
+            provider,
+            provider.certificate_der(KeyPurpose.AUTHENTICATION),
+        ),
+    )
+    schema = etree.XMLSchema(etree.parse(directory / "ebics_request_H005.xsd", parser))
+    for request in requests:
+        schema.assertValid(etree.fromstring(request.body, parser))
 
 
 def test_rejects_replacement_h005_schema_bundle(tmp_path: Path) -> None:

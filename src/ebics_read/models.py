@@ -167,7 +167,7 @@ class DateRange:
     end: date
 
     def __post_init__(self) -> None:
-        if not isinstance(self.start, date) or not isinstance(self.end, date):
+        if type(self.start) is not date or type(self.end) is not date:
             raise TypeError("start and end must be dates")
         if self.start > self.end:
             raise ConfigurationError("date range start must not follow end")
