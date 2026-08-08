@@ -24,6 +24,15 @@ _CURRENCY = re.compile(r"^[A-Z]{3}$")
 _SHA256_HEX = re.compile(r"^[0-9A-F]{64}$")
 _PROTOCOL_VERSION = re.compile(r"^H[0-9]{3}$")
 _VERSION_NUMBER = re.compile(r"^[0-9]{2}\.[0-9]{2}$")
+_AUTHENTICATION_VERSION = re.compile(r"^X[0-9]{3}$")
+_ENCRYPTION_VERSION = re.compile(r"^E[0-9]{3}$")
+_SIGNATURE_VERSION = re.compile(r"^A[0-9]{3}$")
+_BTF_SERVICE_NAME = re.compile(r"^[A-Z0-9]{3}$")
+_BTF_MESSAGE_NAME = re.compile(r"^[a-z.0-9]{1,10}$")
+_BTF_SCOPE = re.compile(r"^[A-Z0-9]{2,3}$")
+_BTF_SERVICE_OPTION = re.compile(r"^[A-Z0-9]{3,10}$")
+_BTF_NUMBER = re.compile(r"^[0-9]{2,3}$")
+_BTF_FORMAT = re.compile(r"^[A-Z0-9]{1,4}$")
 _TRUST_CREATION_TOKEN = object()
 _OOB_IDENTITY_TOKEN = object()
 _SESSION_CREATION_TOKEN = object()
@@ -41,6 +50,17 @@ def _require_token(name: str, value: str, *, optional: bool = False) -> str:
 def _require_identifier(name: str, value: str) -> str:
     if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
         raise ConfigurationError(f"{name} must be a bounded identifier")
+    return value
+
+
+def _require_xml_token(name: str, value: str, max_length: int) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > max_length
+        or value != " ".join(value.split())
+    ):
+        raise ConfigurationError(f"{name} must be a bounded XML token")
     return value
 
 
@@ -95,22 +115,28 @@ class BtfDescriptor:
 
     service_name: str
     message_name: str
-    message_version: str
-    variant: str
-    format: str
-    service_option: str
+    message_version: str | None
+    variant: str | None
+    format: str | None
+    service_option: str | None
     container_type: ContainerType
     scope: str | None = None
 
     def __post_init__(self) -> None:
-        _require_token("service_name", self.service_name)
-        _require_token("message_name", self.message_name)
-        _require_token("message_version", self.message_version)
-        _require_token("variant", self.variant)
-        _require_token("format", self.format)
-        _require_token("service_option", self.service_option)
-        if self.scope is not None:
-            _require_token("scope", self.scope)
+        values = (
+            ("service_name", self.service_name, _BTF_SERVICE_NAME),
+            ("message_name", self.message_name, _BTF_MESSAGE_NAME),
+            ("message_version", self.message_version, _BTF_NUMBER),
+            ("variant", self.variant, _BTF_NUMBER),
+            ("format", self.format, _BTF_FORMAT),
+            ("service_option", self.service_option, _BTF_SERVICE_OPTION),
+            ("scope", self.scope, _BTF_SCOPE),
+        )
+        for name, value, pattern in values:
+            if value is not None and (
+                not isinstance(value, str) or pattern.fullmatch(value) is None
+            ):
+                raise ConfigurationError(f"{name} is not a valid H005 BTF value")
         if not isinstance(self.container_type, ContainerType):
             raise TypeError("container_type must be a ContainerType")
 
@@ -140,13 +166,18 @@ class AccountSelector:
     def __post_init__(self) -> None:
         if (self.iban is None) == (self.account_id is None):
             raise ConfigurationError("provide exactly one of iban or account_id")
-        if self.iban is not None and _IBAN.fullmatch(self.iban) is None:
+        if self.iban is not None and (
+            not isinstance(self.iban, str) or _IBAN.fullmatch(self.iban) is None
+        ):
             raise ConfigurationError(
                 "iban must be an uppercase, structurally valid IBAN token"
             )
         if self.account_id is not None:
-            _require_identifier("account_id", self.account_id)
-        if self.currency is not None and _CURRENCY.fullmatch(self.currency) is None:
+            _require_xml_token("account_id", self.account_id, 64)
+        if self.currency is not None and (
+            not isinstance(self.currency, str)
+            or _CURRENCY.fullmatch(self.currency) is None
+        ):
             raise ConfigurationError("currency must be a three-letter uppercase code")
 
 
@@ -706,24 +737,255 @@ class ServiceCapability:
             raise TypeError("descriptor must be a BtfDescriptor")
         if not isinstance(self.source_order, OrderType):
             raise TypeError("source_order must be an OrderType")
-        if self.source_order not in DISCOVERY_ORDERS:
+        if self.source_order not in {
+            OrderType.HAA,
+            OrderType.HKD,
+            OrderType.HTD,
+        }:
             raise ConfigurationError("capability source must be a discovery order")
+
+
+@dataclass(frozen=True, slots=True)
+class AdvertisedBankUrl:
+    """An informational HPD endpoint; never an automatic redirect target."""
+
+    value: str = field(repr=False)
+    valid_from: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, str) or not 0 < len(self.value) <= 2048:
+            raise ConfigurationError("advertised bank URL must be a bounded string")
+        if self.valid_from is not None and not isinstance(self.valid_from, datetime):
+            raise TypeError("valid_from must be a datetime")
+
+
+@dataclass(frozen=True, slots=True)
+class BankParameters:
+    """Read-relevant HPD access and protocol parameters."""
+
+    urls: tuple[AdvertisedBankUrl, ...]
+    institute: str = field(repr=False)
+    host_id: str | None = field(repr=False)
+    protocol_versions: tuple[str, ...]
+    authentication_versions: tuple[str, ...]
+    encryption_versions: tuple[str, ...]
+    signature_versions: tuple[str, ...]
+    recovery_supported: bool
+    client_data_download_supported: bool
+    downloadable_order_data_supported: bool
+
+    def __post_init__(self) -> None:
+        for name in (
+            "urls",
+            "protocol_versions",
+            "authentication_versions",
+            "encryption_versions",
+            "signature_versions",
+        ):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        if not self.urls or not all(
+            isinstance(value, AdvertisedBankUrl) for value in self.urls
+        ):
+            raise ConfigurationError("bank parameters require advertised URLs")
+        if (
+            not isinstance(self.institute, str)
+            or "\n" in self.institute
+            or "\r" in self.institute
+            or "\t" in self.institute
+            or len(self.institute) > 80
+        ):
+            raise ConfigurationError(
+                "institute must be a normalized string up to 80 chars"
+            )
+        if self.host_id is not None:
+            _require_xml_token("host_id", self.host_id, 35)
+        versions = (
+            ("protocol_versions", self.protocol_versions, _PROTOCOL_VERSION),
+            (
+                "authentication_versions",
+                self.authentication_versions,
+                _AUTHENTICATION_VERSION,
+            ),
+            ("encryption_versions", self.encryption_versions, _ENCRYPTION_VERSION),
+            ("signature_versions", self.signature_versions, _SIGNATURE_VERSION),
+        )
+        for name, values, pattern in versions:
+            if not values or not all(
+                isinstance(value, str) and pattern.fullmatch(value) is not None
+                for value in values
+            ):
+                raise ConfigurationError(f"{name} contains invalid version values")
+            if len(values) != len(set(values)):
+                raise ConfigurationError(f"{name} contains duplicate versions")
+        if not all(
+            type(value) is bool
+            for value in (
+                self.recovery_supported,
+                self.client_data_download_supported,
+                self.downloadable_order_data_supported,
+            )
+        ):
+            raise TypeError("HPD support flags must be booleans")
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredAccount:
+    """Minimum account identity needed to restrict a future BTD request."""
+
+    account_id: str = field(repr=False)
+    iban: str | None = field(default=None, repr=False)
+    currency: str = field(default="EUR", repr=False)
+    restricted_services: tuple[BtfDescriptor, ...] | None = field(
+        default=None, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        _require_xml_token("account_id", self.account_id, 64)
+        if self.iban is not None and (
+            not isinstance(self.iban, str) or _IBAN.fullmatch(self.iban) is None
+        ):
+            raise ConfigurationError("iban must be an uppercase IBAN token")
+        if (
+            not isinstance(self.currency, str)
+            or _CURRENCY.fullmatch(self.currency) is None
+        ):
+            raise ConfigurationError("currency must be a three-letter uppercase code")
+        if self.restricted_services is not None:
+            object.__setattr__(
+                self, "restricted_services", tuple(self.restricted_services)
+            )
+            if not all(
+                isinstance(value, BtfDescriptor) for value in self.restricted_services
+            ):
+                raise TypeError("restricted_services must contain BtfDescriptor values")
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadPermission:
+    """One HKD/HTD subscriber permission for the only business order, BTD."""
+
+    descriptor: BtfDescriptor = field(repr=False)
+    account_id: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.descriptor, BtfDescriptor):
+            raise TypeError("descriptor must be a BtfDescriptor")
+        if self.account_id is not None:
+            _require_xml_token("account_id", self.account_id, 64)
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredUser:
+    """One bank-reported subscriber and its BTD-only permissions."""
+
+    user_id: str = field(repr=False)
+    status: int = field(repr=False)
+    permissions: tuple[DownloadPermission, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.user_id, str)
+            or re.fullmatch(r"[A-Za-z0-9,=]{1,35}", self.user_id) is None
+        ):
+            raise ConfigurationError("user_id is not a valid H005 subscriber ID")
+        if type(self.status) is not int or not 0 <= self.status <= 99:
+            raise ConfigurationError("subscriber status must be between 0 and 99")
+        object.__setattr__(self, "permissions", tuple(self.permissions))
+        if not all(isinstance(value, DownloadPermission) for value in self.permissions):
+            raise TypeError("permissions must contain DownloadPermission values")
+        if len(self.permissions) != len(set(self.permissions)):
+            raise ConfigurationError("subscriber contains duplicate BTD permissions")
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerInformation:
+    """Read-relevant HKD or HTD customer, account, and subscriber data."""
+
+    source_order: OrderType
+    host_id: str = field(repr=False)
+    accounts: tuple[DiscoveredAccount, ...] = field(repr=False)
+    services: tuple[ServiceCapability, ...] = field(repr=False)
+    users: tuple[DiscoveredUser, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if self.source_order not in {OrderType.HKD, OrderType.HTD}:
+            raise ConfigurationError("customer information must come from HKD or HTD")
+        _require_xml_token("host_id", self.host_id, 35)
+        for name in ("accounts", "services", "users"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        if not all(isinstance(value, DiscoveredAccount) for value in self.accounts):
+            raise TypeError("accounts must contain DiscoveredAccount values")
+        if not all(isinstance(value, ServiceCapability) for value in self.services):
+            raise TypeError("services must contain ServiceCapability values")
+        if not self.users or not all(
+            isinstance(value, DiscoveredUser) for value in self.users
+        ):
+            raise ConfigurationError("customer information requires discovered users")
+        if self.source_order is OrderType.HTD and len(self.users) != 1:
+            raise ConfigurationError("HTD must describe exactly one subscriber")
+        if any(value.source_order is not self.source_order for value in self.services):
+            raise ConfigurationError(
+                "service source does not match customer data source"
+            )
+        account_ids = [value.account_id for value in self.accounts]
+        if len(account_ids) != len(set(account_ids)):
+            raise ConfigurationError(
+                "customer information contains duplicate account IDs"
+            )
+        known_accounts = set(account_ids)
+        user_ids = [value.user_id for value in self.users]
+        if len(user_ids) != len(set(user_ids)):
+            raise ConfigurationError("customer information contains duplicate users")
+        customer_descriptors = {value.descriptor for value in self.services}
+        if any(
+            permission.descriptor not in customer_descriptors
+            for user in self.users
+            for permission in user.permissions
+        ):
+            raise ConfigurationError(
+                "subscriber permission is absent from customer services"
+            )
+        if any(
+            permission.account_id not in known_accounts
+            for user in self.users
+            for permission in user.permissions
+            if permission.account_id is not None
+        ):
+            raise ConfigurationError("permission references an unknown account")
 
 
 @dataclass(frozen=True, slots=True)
 class CapabilityDiscovery:
     """Defensive union of supported discovery-order results."""
 
-    services: tuple[ServiceCapability, ...] = ()
+    services: tuple[ServiceCapability, ...] = field(default=(), repr=False)
     completed_orders: tuple[OrderType, ...] = ()
     unsupported_orders: tuple[OrderType, ...] = ()
+    bank_parameters: BankParameters | None = None
+    customer_information: tuple[CustomerInformation, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "services", tuple(self.services))
+        object.__setattr__(
+            self, "customer_information", tuple(self.customer_information)
+        )
         object.__setattr__(self, "completed_orders", tuple(self.completed_orders))
         object.__setattr__(self, "unsupported_orders", tuple(self.unsupported_orders))
         if not all(isinstance(value, ServiceCapability) for value in self.services):
             raise TypeError("services must contain ServiceCapability values")
+        if len(self.services) != len(set(self.services)):
+            raise ConfigurationError("capability results contain duplicate services")
+        if self.bank_parameters is not None and not isinstance(
+            self.bank_parameters, BankParameters
+        ):
+            raise TypeError("bank_parameters must be BankParameters")
+        if not all(
+            isinstance(value, CustomerInformation)
+            for value in self.customer_information
+        ):
+            raise TypeError(
+                "customer_information must contain CustomerInformation values"
+            )
         if not all(
             isinstance(value, OrderType)
             for value in (*self.completed_orders, *self.unsupported_orders)
@@ -736,6 +998,40 @@ class CapabilityDiscovery:
             raise ConfigurationError("capability results accept discovery orders only")
         if set(self.completed_orders) & set(self.unsupported_orders):
             raise ConfigurationError("an order cannot be completed and unsupported")
+        if len(self.completed_orders) != len(set(self.completed_orders)) or len(
+            self.unsupported_orders
+        ) != len(set(self.unsupported_orders)):
+            raise ConfigurationError("capability results contain duplicate orders")
+        if any(
+            value.source_order not in self.completed_orders for value in self.services
+        ):
+            raise ConfigurationError("service capability requires its completed order")
+        customer_services = {
+            service
+            for customer in self.customer_information
+            for service in customer.services
+        }
+        aggregate_customer_services = {
+            service
+            for service in self.services
+            if service.source_order in {OrderType.HKD, OrderType.HTD}
+        }
+        if customer_services != aggregate_customer_services:
+            raise ConfigurationError("aggregate and customer services must agree")
+        if (self.bank_parameters is not None) != (
+            OrderType.HPD in self.completed_orders
+        ):
+            raise ConfigurationError("HPD completion and bank parameters must agree")
+        customer_orders = [value.source_order for value in self.customer_information]
+        if len(customer_orders) != len(set(customer_orders)):
+            raise ConfigurationError("customer discovery order appears more than once")
+        if any(value not in self.completed_orders for value in customer_orders):
+            raise ConfigurationError("customer data requires its completed order")
+        if any(
+            value in self.completed_orders and value not in customer_orders
+            for value in (OrderType.HKD, OrderType.HTD)
+        ):
+            raise ConfigurationError("HKD/HTD completion requires customer data")
 
 
 @dataclass(frozen=True, slots=True)

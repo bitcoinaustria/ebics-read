@@ -58,10 +58,12 @@ Unknown algorithm identifiers fail closed.
 
 ## BTF/BTD
 
-A `BtfDescriptor` always represents ServiceName, optional Scope, MsgName,
-message version, Variant, Format, ServiceOption, and container type. Scope is
-never hard-coded: callers may supply `AT`, `GLB`, `BIL`, another bank-specific
-token, or omit it.
+A `BtfDescriptor` represents ServiceName, MsgName, and any present optional
+Scope, message version, Variant, Format, ServiceOption, and container type.
+Scope is never hard-coded: callers may supply `AT`, `GLB`, `BIL`, another
+schema-valid two- or three-character token, or omit it. HPD-advertised URLs are
+informational results; they never redirect the configured bank endpoint
+automatically.
 
 BTD is not complete until initialization, transaction-ID validation, ordered
 segment transfer, authenticated response validation, decryption,

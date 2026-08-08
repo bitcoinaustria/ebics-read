@@ -28,7 +28,8 @@ they cannot carry business documents.
 
 Current foundation APIs provide:
 
-- immutable bank, subscriber, BTF, date, account, capability, and result models;
+- immutable bank, subscriber, BTF, date, account, HPD/HKD/HTD capability, and
+  result models;
 - injected key, bank-key trust, transport, clock, nonce, replay-safe session,
   segment-spool, streaming document-sink, deadline, and cancellation protocols;
 - separate certificate fingerprints and normative H005 public-key digests, with

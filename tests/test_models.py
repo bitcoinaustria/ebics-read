@@ -1,16 +1,23 @@
-from datetime import date
+from dataclasses import replace
+from datetime import date, datetime, timezone
 
 import pytest
 
 from ebics_read import (
     AccountSelector,
+    AdvertisedBankUrl,
     Bank,
+    BankParameters,
     BtfDescriptor,
     CapabilityDiscovery,
     ConfigurationError,
     ContainerType,
+    CustomerInformation,
     DateRange,
+    DiscoveredAccount,
+    DiscoveredUser,
     DownloadOptions,
+    DownloadPermission,
     DownloadPhase,
     DownloadSession,
     EbicsPublicKeyDigest,
@@ -81,7 +88,9 @@ def test_btf_descriptor_supports_omitted_and_non_at_scopes() -> None:
     assert descriptor(None).scope is None
     assert descriptor("GLB").scope == "GLB"
     assert descriptor("BIL").scope == "BIL"
-    assert descriptor("BANK01").scope == "BANK01"
+    assert descriptor("XYZ").scope == "XYZ"
+    with pytest.raises(ConfigurationError):
+        descriptor("BANK01")
 
 
 def test_dates_and_accounts_are_typed() -> None:
@@ -196,10 +205,139 @@ def test_collection_models_defensively_freeze_caller_lists() -> None:
     versions.append(ProtocolVersion("H004", "02.50"))
     assert len(result.versions) == 1
 
-    orders = [OrderType.HPD]
+    orders = [OrderType.HAA]
     capabilities = CapabilityDiscovery(completed_orders=orders)  # type: ignore[arg-type]
-    orders.append(OrderType.HAA)
-    assert capabilities.completed_orders == (OrderType.HPD,)
+    orders.append(OrderType.HPD)
+    assert capabilities.completed_orders == (OrderType.HAA,)
+
+
+def test_discovery_models_preserve_only_read_relevant_typed_results() -> None:
+    descriptor = BtfDescriptor(
+        service_name="EOP",
+        scope=None,
+        message_name="camt.053",
+        message_version=None,
+        variant=None,
+        format="XML",
+        service_option=None,
+        container_type=ContainerType.NONE,
+    )
+    urls = [
+        AdvertisedBankUrl(
+            "https://future-bank.invalid/ebics",
+            datetime(2027, 1, 1, tzinfo=timezone.utc),
+        )
+    ]
+    parameters = BankParameters(
+        urls=urls,  # type: ignore[arg-type]
+        institute="Synthetic Bank",
+        host_id="HOST",
+        protocol_versions=["H005"],  # type: ignore[arg-type]
+        authentication_versions=["X002"],  # type: ignore[arg-type]
+        encryption_versions=["E002"],  # type: ignore[arg-type]
+        signature_versions=["A006"],  # type: ignore[arg-type]
+        recovery_supported=True,
+        client_data_download_supported=True,
+        downloadable_order_data_supported=True,
+    )
+    urls.append(AdvertisedBankUrl("https://ignored.invalid/ebics"))
+    account = DiscoveredAccount(
+        "ACCOUNT,= 1", "AT611904300234573201", restricted_services=[descriptor]
+    )
+    permission = DownloadPermission(descriptor, account.account_id)
+    user = DiscoveredUser("USER,=1", 1, [permission])  # type: ignore[arg-type]
+    customer_service = ServiceCapability(descriptor, OrderType.HTD)
+    customer = CustomerInformation(
+        OrderType.HTD,
+        "HOST",
+        [account],  # type: ignore[arg-type]
+        [customer_service],  # type: ignore[arg-type]
+        [user],  # type: ignore[arg-type]
+    )
+    result = CapabilityDiscovery(
+        services=(customer_service,),
+        bank_parameters=parameters,
+        customer_information=[customer],  # type: ignore[arg-type]
+        completed_orders=(OrderType.HPD, OrderType.HTD),
+    )
+
+    assert len(parameters.urls) == 1
+    assert account.restricted_services == (descriptor,)
+    assert result.customer_information == (customer,)
+    assert "future-bank" not in repr(parameters)
+    assert "ACCOUNT" not in repr(result)
+    assert "USER" not in repr(result)
+    assert "EOP" not in repr(result)
+    assert "camt.053" not in repr(result)
+    assert "status" not in repr(result)
+    assert "EUR" not in repr(account)
+
+    for changes in (
+        {"service_name": "EO"},
+        {"message_name": "CAMT.053"},
+        {"message_version": "8"},
+        {"variant": "0001"},
+        {"format": "PLAIN"},
+        {"service_option": "X"},
+    ):
+        with pytest.raises(ConfigurationError):
+            replace(descriptor, **changes)  # type: ignore[arg-type]
+
+    with pytest.raises(ConfigurationError):
+        CustomerInformation(
+            OrderType.HTD,
+            "HOST",
+            (account,),
+            (),
+            (user, DiscoveredUser("SECOND", 1, ())),
+        )
+    with pytest.raises(ConfigurationError):
+        CustomerInformation(
+            OrderType.HKD,
+            "HOST",
+            (),
+            (ServiceCapability(descriptor, OrderType.HKD),),
+            (DiscoveredUser("USER", 1, (DownloadPermission(descriptor, "MISSING"),)),),
+        )
+    with pytest.raises(ConfigurationError):
+        CustomerInformation(
+            OrderType.HKD,
+            "HOST",
+            (account,),
+            (ServiceCapability(descriptor, OrderType.HKD),),
+            (user, user),
+        )
+    with pytest.raises(ConfigurationError):
+        DiscoveredUser("USER", 1, (permission, permission))
+    with pytest.raises(ConfigurationError):
+        CapabilityDiscovery(completed_orders=(OrderType.HPD,))
+    with pytest.raises(ConfigurationError):
+        ServiceCapability(descriptor, OrderType.HPD)
+    with pytest.raises(ConfigurationError):
+        replace(parameters, protocol_versions=("H005", "H005"))
+    with pytest.raises(ConfigurationError):
+        replace(parameters, authentication_versions=("A006",))
+    with pytest.raises(TypeError):
+        replace(parameters, recovery_supported=1)  # type: ignore[arg-type]
+    with pytest.raises(ConfigurationError):
+        DiscoveredAccount("ACCOUNT", currency="EURO")
+    with pytest.raises(ConfigurationError):
+        DiscoveredUser("bad-user", 1, ())
+    with pytest.raises(ConfigurationError):
+        DiscoveredUser("USER", 100, ())
+    with pytest.raises(ConfigurationError):
+        CapabilityDiscovery(
+            services=(ServiceCapability(descriptor, OrderType.HAA),),
+        )
+    with pytest.raises(ConfigurationError):
+        CapabilityDiscovery(
+            completed_orders=(OrderType.HTD,),
+            customer_information=(customer,),
+        )
+    with pytest.raises(ConfigurationError):
+        CapabilityDiscovery(
+            completed_orders=(OrderType.HAA, OrderType.HAA),
+        )
 
 
 def test_h005_negotiation_rejects_downgrade_and_conflicts() -> None:

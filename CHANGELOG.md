@@ -24,5 +24,6 @@ All notable changes will be recorded here. The project has made no release.
 - Explicit BTD receipt states plus leased resumable-state, protected-segment,
   streaming document-sink, provenance, deadline, cancellation, and retry seams.
 - Exact typed 128-bit transaction IDs and a persistent atomic replay-claim seam.
+- Typed HPD parameters and BTD-only HKD/HTD account and subscriber permissions.
 - Architecture, threat-model, protocol-scope, key-lifecycle, interoperability,
   and clean-room source documentation.
