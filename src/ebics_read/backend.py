@@ -1396,7 +1396,10 @@ class EbicsBackend:
                 )
             except SessionConflictError:
                 pass
-            raise AmbiguousTransportError("BTD receipt outcome is ambiguous") from exc
+            raise AmbiguousTransportError(
+                "BTD receipt outcome is ambiguous; resolve_ambiguous_receipt "
+                "closes the session out"
+            ) from exc
         verified = state.mark_receipt_response_verified()
         try:
             return _persist_btd_successor(session_store, lease, state, verified)
@@ -1404,6 +1407,30 @@ class EbicsBackend:
             raise AmbiguousTransportError(
                 "BTD receipt was verified but local state persistence failed"
             ) from exc
+
+    def _publish_btd_stages(
+        self,
+        state: DownloadSession,
+        sink: DocumentSink,
+        control: OperationControl,
+    ) -> tuple[DownloadedDocument, ...]:
+        """Idempotently publish every staged document of a positive receipt."""
+
+        published: list[DownloadedDocument] = []
+        for staged_record in state.staged_documents:
+            self._raise_if_btd_stopped(control)
+            reference = sink.publish(staged_record.staging_id)
+            published.append(
+                DownloadedDocument(
+                    staged_record.staging_id,
+                    staged_record.provenance,
+                    staged_record.content_sha256,
+                    staged_record.size_bytes,
+                    reference,
+                    staged_record.zip_members,
+                )
+            )
+        return tuple(published)
 
     def _discard_unpersisted_btd_stages(
         self,
@@ -1472,6 +1499,108 @@ class EbicsBackend:
         state = _persist_btd_successor(session_store, lease, state, finished)
         segment_store.discard(lease)
         return state
+
+    def resolve_ambiguous_receipt(
+        self,
+        bank: Bank,
+        subscriber: Subscriber,
+        protocol: NegotiatedProtocol,
+        trusted_bank_keys: TrustedBankKeys,
+        session_id: str,
+        descriptor: BtfDescriptor,
+        options: DownloadOptions,
+        sink: DocumentSink,
+        control: OperationControl,
+        *,
+        bank_confirmed_acceptance: bool,
+    ) -> tuple[DownloadedDocument, ...]:
+        """Close out a session stuck on an unknown positive-receipt outcome.
+
+        The library never decides this itself: only the operator can learn from
+        the bank whether the positive receipt was accepted, which determines
+        whether the bank still holds the data. ``bank_confirmed_acceptance``
+        publishes the already-verified stages; its negation discards them so the
+        re-offered data can be downloaded again.
+        """
+
+        if type(bank_confirmed_acceptance) is not bool:
+            raise TypeError("bank_confirmed_acceptance must be an explicit bool")
+        if not isinstance(descriptor, BtfDescriptor):
+            raise TypeError("BTD descriptor must be a BtfDescriptor")
+        if (
+            self.key_provider is None
+            or self.clock is None
+            or self.nonce_source is None
+            or self.session_store is None
+            or self.segment_store is None
+        ):
+            raise ConfigurationError(
+                "BTD requires key, clock, nonce, session, and segment providers"
+            )
+        key_provider = self.key_provider
+        session_store = self.session_store
+        segment_store = self.segment_store
+        authentication_der = key_provider.certificate_der(KeyPurpose.AUTHENTICATION)
+        encryption_der = key_provider.certificate_der(KeyPurpose.ENCRYPTION)
+        request_identity = _download_request_identity(
+            bank,
+            subscriber,
+            protocol,
+            trusted_bank_keys,
+            descriptor,
+            options,
+            self.protocol_limits,
+            self.xml_limits,
+            authentication_der,
+            encryption_der,
+        )
+        owner_token = self.nonce_source.random_bytes(32)
+        if type(owner_token) is not bytes or len(owner_token) != 32:
+            raise ConfigurationError("BTD lease nonce source must return 32 bytes")
+        self._raise_if_btd_stopped(control)
+        lease = session_store.acquire_lease(session_id, owner_token, control.deadline)
+        try:
+            state = session_store.load(lease)
+            if state is None:
+                raise SessionConflictError("BTD session has no resolvable state")
+            if state.request_identity != request_identity:
+                raise SessionConflictError("BTD session belongs to another request")
+            if state.phase is DownloadPhase.COMPLETE:
+                segment_store.discard(lease)
+                return state.published_documents
+            if (
+                state.phase is not DownloadPhase.RECEIPT_AMBIGUOUS
+                or state.receipt_kind is not ReceiptKind.POSITIVE
+            ):
+                raise SessionConflictError(
+                    "BTD session has no ambiguous positive receipt to resolve"
+                )
+            if not bank_confirmed_acceptance:
+                self._discard_unpersisted_btd_stages(state, descriptor, sink)
+                segment_store.discard(lease)
+                if not session_store.delete(lease, state.revision):
+                    raise SessionConflictError("BTD resolution raced another worker")
+                raise ProtocolError(
+                    "BTD positive receipt was not accepted; the data was discarded "
+                    "and must be downloaded again"
+                )
+            state = _persist_btd_successor(
+                session_store, lease, state, state.mark_receipt_response_verified()
+            )
+            state = _persist_btd_successor(
+                session_store,
+                lease,
+                state,
+                state.mark_documents_published(
+                    self._publish_btd_stages(state, sink, control)
+                ),
+            )
+            published = state.published_documents
+            _persist_btd_successor(session_store, lease, state, state.finish())
+            segment_store.discard(lease)
+            return published
+        finally:
+            session_store.release_lease(lease)
 
     def download(
         self,
@@ -1553,7 +1682,8 @@ class EbicsBackend:
                         )
                         segment_store.discard(lease)
                     raise AmbiguousTransportError(
-                        "BTD receipt intent survived without a verified response"
+                        "BTD receipt intent survived without a verified response; "
+                        "resolve_ambiguous_receipt closes the session out"
                     )
                 if state.phase is DownloadPhase.RECEIPT_AMBIGUOUS:
                     if state.receipt_kind is ReceiptKind.NEGATIVE:
@@ -1563,7 +1693,10 @@ class EbicsBackend:
                             sink,
                         )
                         segment_store.discard(lease)
-                    raise AmbiguousTransportError("BTD receipt outcome is ambiguous")
+                    raise AmbiguousTransportError(
+                        "BTD receipt outcome is ambiguous; resolve_ambiguous_receipt "
+                        "closes the session out"
+                    )
                 if state.phase is DownloadPhase.DOCUMENTS_PUBLISHED:
                     state = _persist_btd_successor(
                         session_store, lease, state, state.finish()
@@ -1583,25 +1716,13 @@ class EbicsBackend:
                         raise ProtocolError(
                             "BTD transaction completed with a negative receipt"
                         )
-                    published: list[DownloadedDocument] = []
-                    for staged_record in state.staged_documents:
-                        self._raise_if_btd_stopped(control)
-                        reference = sink.publish(staged_record.staging_id)
-                        published.append(
-                            DownloadedDocument(
-                                staged_record.staging_id,
-                                staged_record.provenance,
-                                staged_record.content_sha256,
-                                staged_record.size_bytes,
-                                reference,
-                                staged_record.zip_members,
-                            )
-                        )
                     state = _persist_btd_successor(
                         session_store,
                         lease,
                         state,
-                        state.mark_documents_published(tuple(published)),
+                        state.mark_documents_published(
+                            self._publish_btd_stages(state, sink, control)
+                        ),
                     )
                     continue
                 if state.phase is DownloadPhase.DOCUMENTS_STAGED:

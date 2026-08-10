@@ -4,3 +4,7 @@ include CODE_OF_CONDUCT.md
 include CONTRIBUTING.md
 include SECURITY.md
 recursive-include docs *.md
+# tests/test_examples_local_provider.py imports these, so an sdist without them
+# cannot run its own test suite. They stay out of the wheel.
+include examples/README.md
+recursive-include examples *.py

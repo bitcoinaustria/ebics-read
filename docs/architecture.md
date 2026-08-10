@@ -135,6 +135,24 @@ known to have sent no request bytes is retryable. The default urllib transport
 cannot prove that and classifies network interruption as ambiguous. Protocol,
 authentication, and security failures are terminal.
 
+`receipt_ambiguous` after a *negative* receipt discards its stages immediately.
+After a *positive* receipt the stages are already signature-, digest- and
+container-verified, so they are kept: only the operator can learn from the bank
+whether the acknowledgement was recorded, and therefore whether the bank still
+holds the data. `resolve_ambiguous_receipt` is that decision point. With
+`bank_confirmed_acceptance=True` it publishes the staged documents and finishes
+the session; with `False` it discards the stages and the spool and deletes the
+state so the re-offered data can be downloaded again. The durable transaction-ID
+claim outlives the deletion, so the original transaction can never be replayed.
+The library never resolves this on its own, and without the call the session
+raises `AmbiguousTransportError` on every attempt rather than guessing.
+
+Because `DownloadSession` can only be constructed through validated transitions,
+a persistent `SessionStore` uses `to_mapping` and `from_mapping` to project state
+onto JSON-safe primitives and rebuild it. Reloading re-runs every construction
+invariant, including phase coherence and the pinned protocol version, so stored
+state is treated as untrusted input.
+
 `total_segments` is checked against `ProtocolLimits.max_segments` before a
 session is initialized. Every caller-supplied session ID is bound to a hidden
 `DownloadRequestIdentity`; resumption under different bank, subscriber, key,

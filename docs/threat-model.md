@@ -90,6 +90,17 @@ match the bank's out-of-band values.
   positive receipt is unreachable until authentication, decryption, and bounded
   container validation have completed; negative and ambiguous receipt outcomes
   have distinct states.
+- An ambiguous positive receipt is never resolved automatically in either
+  direction: publishing would assert delivery the library cannot prove, and
+  discarding would destroy data the bank may already consider fetched.
+  `resolve_ambiguous_receipt` requires the operator to supply the bank's answer
+  explicitly, as a keyword-only argument, and refuses any session that is not in
+  that state. Both outcomes discard the spool and release the lease, so an
+  unresolved session cannot accumulate sensitive state indefinitely.
+- Persisted download state is untrusted input. `from_mapping` rebuilds it through
+  the same validated constructor as every in-memory transition, so tampered
+  phases, revisions, segment counts, transaction IDs, or protocol versions fail
+  closed rather than resuming a forged session.
 - Session revisions require lease/CAS storage and each session is bound to a
   hidden download-request identity. Protected raw response fragments have a
   caller-spool contract with a recoverable number/reference index. Verified

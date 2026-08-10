@@ -26,8 +26,10 @@ from ebics_read import (
     OperationCancelledError,
     OperationDeadlineError,
     OperationNotImplementedError,
+    ProtocolError,
     RetrievalProvenance,
     SecurityError,
+    SessionConflictError,
     SessionLease,
     Subscriber,
     TransactionId,
@@ -408,3 +410,87 @@ def test_btd_unknown_container_framing_fails_before_network_io() -> None:
         _download(backend, trusted, sink, ContainerType.XML)
 
     assert transport.calls == 0
+
+
+def _resolve(
+    backend: object,
+    trusted: object,
+    sink: _Sink,
+    *,
+    bank_confirmed_acceptance: bool,
+    container_type: ContainerType = ContainerType.NONE,
+):  # type: ignore[no-untyped-def]
+    return backend.resolve_ambiguous_receipt(  # type: ignore[attr-defined,no-any-return]
+        Bank("https://bank.invalid/ebics", "HOST"),
+        Subscriber("PARTNER=1", "USER,1", "SYSTEM1"),
+        NegotiatedProtocol(),
+        trusted,
+        "btd-session",
+        _descriptor(container_type),
+        DownloadOptions(),
+        sink,
+        _Control(),
+        bank_confirmed_acceptance=bank_confirmed_acceptance,
+    )
+
+
+def _stuck_on_ambiguous_receipt():  # type: ignore[no-untyped-def]
+    backend, transport, trusted, spool = _prepared_backend(b"synthetic document")
+    transport.ambiguous_receipt = True
+    sink = _Sink(transport)
+    with pytest.raises(AmbiguousTransportError, match="resolve_ambiguous_receipt"):
+        _download(backend, trusted, sink)
+    assert not sink.published
+    return backend, transport, trusted, spool, sink
+
+
+def test_btd_ambiguous_receipt_publishes_once_the_bank_confirms_acceptance() -> None:
+    backend, transport, trusted, spool, sink = _stuck_on_ambiguous_receipt()
+    calls = transport.calls
+    # The operator established out of band that the bank recorded the receipt.
+    transport.receipt_returned = True
+
+    documents = _resolve(backend, trusted, sink, bank_confirmed_acceptance=True)
+
+    assert tuple(sink.published.values()) == (b"synthetic document",)
+    assert len(documents) == 1
+    # Resolution is local: it never sends another EBICS request.
+    assert transport.calls == calls
+    lease = SessionLease("btd-session", b"0123456789abcdef", _Control.deadline)
+    assert spool.list_segments(lease) == ()
+    # The session is terminal and idempotent from both entry points.
+    assert _resolve(backend, trusted, sink, bank_confirmed_acceptance=True) == documents
+    assert _download(backend, trusted, sink) == documents
+    assert transport.calls == calls
+
+
+def test_btd_ambiguous_receipt_discards_when_the_bank_did_not_accept_it() -> None:
+    backend, _, trusted, spool, sink = _stuck_on_ambiguous_receipt()
+
+    with pytest.raises(ProtocolError, match="must be downloaded again"):
+        _resolve(backend, trusted, sink, bank_confirmed_acceptance=False)
+
+    assert not sink.published
+    assert not sink.stages
+    lease = SessionLease("btd-session", b"0123456789abcdef", _Control.deadline)
+    assert spool.list_segments(lease) == ()
+    # State is gone, so the re-offered data is downloadable again.
+    with pytest.raises(SessionConflictError, match="no resolvable state"):
+        _resolve(backend, trusted, sink, bank_confirmed_acceptance=False)
+
+
+def test_btd_ambiguous_receipt_resolution_refuses_other_phases_and_loose_flags() -> (
+    None
+):
+    backend, transport, trusted, _ = _prepared_backend(b"synthetic document")
+    sink = _Sink(transport)
+
+    with pytest.raises(SessionConflictError, match="no resolvable state"):
+        _resolve(backend, trusted, sink, bank_confirmed_acceptance=True)
+
+    documents = _download(backend, trusted, sink)
+    # A completed session resolves idempotently instead of republishing.
+    assert _resolve(backend, trusted, sink, bank_confirmed_acceptance=True) == documents
+
+    with pytest.raises(TypeError, match="explicit bool"):
+        _resolve(backend, trusted, sink, bank_confirmed_acceptance=1)  # type: ignore[arg-type]

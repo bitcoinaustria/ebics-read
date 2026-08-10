@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import zlib
 from io import BytesIO
+from os import sep
 from random import Random
 from stat import S_IFLNK
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
@@ -92,11 +93,23 @@ def test_btd_zip_extracts_only_bounded_content_and_hashed_names() -> None:
     assert first.content_sha256 == ContentSha256.from_bytes(b"first")
 
 
-@pytest.mark.parametrize("name", ("../secret", "/absolute", "C:/drive", "a\\b"))
+@pytest.mark.parametrize("name", ("../secret", "/absolute", "C:/drive"))
 def test_btd_zip_rejects_unsafe_paths(name: str) -> None:
     with pytest.raises(SecurityError, match="path"):
         _extract_btd_documents(
             _zip((name, b"content")), ContainerType.ZIP, ProtocolLimits(), _never_stop
+        )
+
+
+@pytest.mark.skipif(
+    sep == "\\",
+    reason="zipfile rewrites os.sep to / in every ZipInfo, so no member name "
+    "reaching the extractor can contain a backslash on this platform",
+)
+def test_btd_zip_rejects_backslash_member_names() -> None:
+    with pytest.raises(SecurityError, match="path"):
+        _extract_btd_documents(
+            _zip(("a\\b", b"content")), ContainerType.ZIP, ProtocolLimits(), _never_stop
         )
 
 

@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from datetime import date, datetime, timezone
 
@@ -484,3 +485,85 @@ def test_h005_negotiation_rejects_downgrade_and_conflicts() -> None:
         VersionDiscovery(
             (ProtocolVersion("H005", "03.00"), ProtocolVersion("H005", "03.01"))
         )
+
+
+def test_download_session_survives_a_json_round_trip_at_every_phase() -> None:
+    state = DownloadSession.start(
+        "local-session", _REQUEST_IDENTITY, ProtocolLimits(max_segments=2)
+    )
+    staged, published = _document_pair(2)
+    phases = [state]
+    state = state.initialize(transaction_id=_TRANSACTION_ID, total_segments=2)
+    phases.append(state)
+    for segment in (1, 2):
+        state = state.record_segment(segment)
+        phases.append(state)
+    for transition in (
+        DownloadSession.mark_signatures_and_digests_verified,
+        DownloadSession.mark_decrypted,
+        DownloadSession.mark_container_verified,
+    ):
+        state = transition(state)
+        phases.append(state)
+    state = state.mark_documents_staged((staged,))
+    phases.append(state)
+    state = state.mark_positive_receipt_pending()
+    phases.append(state)
+    state = state.mark_receipt_response_verified()
+    phases.append(state)
+    state = state.mark_documents_published((published,))
+    phases.append(state)
+    phases.append(state.finish())
+
+    for original in phases:
+        # The store only ever sees JSON, so encode and decode for real.
+        restored = DownloadSession.from_mapping(
+            json.loads(json.dumps(original.to_mapping()))
+        )
+        assert restored == original
+        assert restored.to_mapping() == original.to_mapping()
+
+
+def test_persisted_download_session_is_treated_as_untrusted_input() -> None:
+    state = DownloadSession.start(
+        "local-session", _REQUEST_IDENTITY, ProtocolLimits(max_segments=2)
+    ).initialize(transaction_id=_TRANSACTION_ID, total_segments=2)
+    mapping = state.to_mapping()
+
+    with pytest.raises(TypeError, match="must be a mapping"):
+        DownloadSession.from_mapping([])  # type: ignore[arg-type]
+    with pytest.raises(ConfigurationError, match="unexpected or missing keys"):
+        DownloadSession.from_mapping({**mapping, "extra": 1})
+    with pytest.raises(ConfigurationError, match="unexpected or missing keys"):
+        DownloadSession.from_mapping(
+            {key: value for key, value in mapping.items() if key != "revision"}
+        )
+    # Coherence is re-checked, not just field types.
+    with pytest.raises(ConfigurationError, match="exceeds transaction bounds"):
+        DownloadSession.from_mapping({**mapping, "next_segment": 9})
+    with pytest.raises(ConfigurationError, match="segment limit"):
+        DownloadSession.from_mapping({**mapping, "total_segments": 9})
+    with pytest.raises(ConfigurationError, match="transaction ID"):
+        DownloadSession.from_mapping({**mapping, "transaction_id": "nothex"})
+    with pytest.raises(ValueError, match="DownloadPhase"):
+        DownloadSession.from_mapping({**mapping, "phase": "invented"})
+
+
+def test_persisted_provenance_rejects_another_protocol_version() -> None:
+    staged, _ = _document_pair()
+    state = (
+        DownloadSession.start(
+            "local-session", _REQUEST_IDENTITY, ProtocolLimits(max_segments=2)
+        )
+        .initialize(transaction_id=_TRANSACTION_ID, total_segments=1)
+        .record_segment(1)
+        .mark_signatures_and_digests_verified()
+        .mark_decrypted()
+        .mark_container_verified()
+        .mark_documents_staged((staged,))
+    )
+    mapping = state.to_mapping()
+    mapping["staged_documents"][0]["provenance"]["version_number"] = "02.05"
+
+    with pytest.raises(UnsupportedProtocolVersionError, match="exact H005"):
+        DownloadSession.from_mapping(mapping)

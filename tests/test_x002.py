@@ -20,7 +20,11 @@ from ebics_read import (
 from ebics_read.h005 import H005_NAMESPACE, ParsedH005Response, parse_h005_response
 from ebics_read.models import BankKeyRole
 from ebics_read.testing import synthetic_out_of_band_identity
-from ebics_read.x002 import AuthenticatedH005Response, verify_x002_response
+from ebics_read.x002 import (
+    AuthenticatedH005Response,
+    _append_x002_auth_signature,
+    verify_x002_response,
+)
 
 _DS = "http://www.w3.org/2000/09/xmldsig#"
 _C14N = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
@@ -244,3 +248,60 @@ def test_x002_rejects_algorithm_reference_and_structure_changes() -> None:
     etree.SubElement(signature, etree.QName(_DS, "KeyInfo"))
     with pytest.raises(XmlSecurityError, match="structure"):
         verify_x002_response(_reparse(parsed), trusted)
+
+
+class _RecordingProvider:
+    """Signs correctly and records the exact bytes the library asked it to sign."""
+
+    def __init__(self, key: rsa.RSAPrivateKey, *, strip: bool = False) -> None:
+        self._key = key
+        self._strip = strip
+        self.signature = b""
+
+    def certificate_der(self, purpose: object) -> bytes:
+        raise AssertionError("request signing must not fetch certificates")
+
+    def sign_x002(self, canonical_signed_info: bytes) -> bytes:
+        self.signature = self._key.sign(
+            canonical_signed_info, padding.PKCS1v15(), hashes.SHA256()
+        )
+        # Some HSM and bignum providers return the integer, not the octet string.
+        return self.signature.lstrip(b"\x00") if self._strip else self.signature
+
+    def decrypt_e002_transaction_key(self, wrapped_key: bytes) -> bytes:
+        raise AssertionError("request signing must not unwrap transaction keys")
+
+
+def _request(marker: str) -> etree._Element:
+    root = etree.Element(etree.QName(H005_NAMESPACE, "ebicsRequest"))
+    etree.SubElement(
+        root, etree.QName(H005_NAMESPACE, "header"), authenticate="true"
+    ).text = marker
+    return root
+
+
+def test_x002_request_signature_value_is_always_one_modulus_wide() -> None:
+    key = rsa.generate_private_key(public_exponent=65_537, key_size=2048)
+    certificate_der = _certificate(key, BankKeyRole.AUTHENTICATION)
+    key_bytes = key.key_size // 8
+
+    # Roughly one signature in 256 has a leading zero octet; find one so that a
+    # stripping provider actually returns a short value.
+    for attempt in range(4096):
+        marker = f"synthetic {attempt}"
+        probe = _RecordingProvider(key)
+        _append_x002_auth_signature(_request(marker), probe, certificate_der)
+        if probe.signature.startswith(b"\x00"):
+            break
+    else:  # pragma: no cover - 4096 misses is a broken RSA implementation
+        pytest.fail("no signature with a leading zero octet was found")
+
+    provider = _RecordingProvider(key, strip=True)
+    root = _request(marker)
+    _append_x002_auth_signature(root, provider, certificate_der)
+
+    value = root.findtext(f".//{{{_DS}}}SignatureValue")
+    assert value is not None
+    emitted = base64.b64decode(value, validate=True)
+    assert len(emitted) == key_bytes
+    assert emitted == provider.signature

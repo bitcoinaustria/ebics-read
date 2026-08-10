@@ -137,6 +137,7 @@ class _Transport:
     technical_by_order: dict[OrderType, str] | None = None
     transaction_id: str = _TRANSACTION_ID
     bank_parameter_timestamp: datetime | None = None
+    wrapped_key: bytes = b"synthetic wrapped key"
     requests: list[_PreparedTransportRequest] = field(default_factory=list)
 
     def exchange(
@@ -176,6 +177,7 @@ class _Transport:
                     segment_number=1,
                     fragment=self.fragments[0],
                     encryption_der=self.encryption_der,
+                    wrapped_key=self.wrapped_key,
                     bank_parameter_timestamp=self.bank_parameter_timestamp,
                 )
             )
@@ -229,6 +231,7 @@ def _response(
     segment_number: int | None = None,
     fragment: str | None = None,
     encryption_der: bytes | None = None,
+    wrapped_key: bytes = b"synthetic wrapped key",
     technical: str = "000000",
     business: str = "000000",
     bank_parameter_timestamp: datetime | None = None,
@@ -283,7 +286,7 @@ def _response(
             ).decode()
             etree.SubElement(
                 info, etree.QName(_H005, "TransactionKey")
-            ).text = base64.b64encode(b"synthetic wrapped key").decode()
+            ).text = base64.b64encode(wrapped_key).decode()
         etree.SubElement(transfer, etree.QName(_H005, "OrderData")).text = fragment
     etree.SubElement(
         body, etree.QName(_H005, "ReturnCode"), authenticate="true"

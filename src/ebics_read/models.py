@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hmac
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 from hashlib import sha256
+from typing import Any
 from urllib.parse import urlsplit
 
 from .errors import (
@@ -488,6 +490,74 @@ class DownloadSession:
             staged_documents,
             published_documents,
             _creation_token=_SESSION_CREATION_TOKEN,
+        )
+
+    def to_mapping(self) -> dict[str, Any]:
+        """Project this state onto JSON-safe primitives for a persistent store.
+
+        A ``SessionStore`` cannot construct a session directly, so this and
+        :meth:`from_mapping` are the only supported way to survive a restart.
+        The result contains sensitive identifiers and must be stored with the
+        same confidentiality as the spool.
+        """
+
+        return {
+            "session_id": self.session_id,
+            "request_identity": self.request_identity.sha256_hex,
+            "phase": self.phase.value,
+            "transaction_id": (
+                None if self.transaction_id is None else self.transaction_id.value
+            ),
+            "next_segment": self.next_segment,
+            "total_segments": self.total_segments,
+            "max_segments": self.max_segments,
+            "revision": self.revision,
+            "receipt_kind": (
+                None if self.receipt_kind is None else self.receipt_kind.value
+            ),
+            "staged_documents": [
+                _staged_document_to_mapping(value) for value in self.staged_documents
+            ],
+            "published_documents": [
+                _downloaded_document_to_mapping(value)
+                for value in self.published_documents
+            ],
+        }
+
+    @classmethod
+    def from_mapping(cls, mapping: Mapping[str, Any]) -> DownloadSession:
+        """Rebuild persisted state, re-running every construction invariant.
+
+        Stored state is treated as untrusted input: anything that does not
+        reconstruct into a coherent session fails closed.
+        """
+
+        if not isinstance(mapping, Mapping):
+            raise TypeError("persisted download session must be a mapping")
+        if set(mapping) != _DOWNLOAD_SESSION_KEYS:
+            raise ConfigurationError(
+                "persisted download session has unexpected or missing keys"
+            )
+        transaction_id = mapping["transaction_id"]
+        receipt_kind = mapping["receipt_kind"]
+        return cls._create(
+            mapping["session_id"],
+            DownloadRequestIdentity(mapping["request_identity"]),
+            DownloadPhase(mapping["phase"]),
+            None if transaction_id is None else TransactionId(transaction_id),
+            mapping["next_segment"],
+            mapping["total_segments"],
+            mapping["max_segments"],
+            mapping["revision"],
+            None if receipt_kind is None else ReceiptKind(receipt_kind),
+            tuple(
+                _staged_document_from_mapping(value)
+                for value in mapping["staged_documents"]
+            ),
+            tuple(
+                _downloaded_document_from_mapping(value)
+                for value in mapping["published_documents"]
+            ),
         )
 
     @classmethod
@@ -1687,6 +1757,133 @@ class RetrievalProvenance:
         if type(self.segment_count) is not int or self.segment_count <= 0:
             raise ConfigurationError("segment_count must be positive")
         _require_identifier("bank_host_id", self.bank_host_id)
+
+
+_DOWNLOAD_SESSION_KEYS = frozenset(
+    {
+        "session_id",
+        "request_identity",
+        "phase",
+        "transaction_id",
+        "next_segment",
+        "total_segments",
+        "max_segments",
+        "revision",
+        "receipt_kind",
+        "staged_documents",
+        "published_documents",
+    }
+)
+
+
+def _zip_member_to_mapping(value: ZipMemberIdentity) -> dict[str, Any]:
+    return {
+        "index": value.index,
+        "name_sha256": value.name_sha256.sha256_hex,
+        "content_sha256": value.content_sha256.sha256_hex,
+        "size_bytes": value.size_bytes,
+    }
+
+
+def _zip_member_from_mapping(mapping: Mapping[str, Any]) -> ZipMemberIdentity:
+    return ZipMemberIdentity(
+        mapping["index"],
+        ContentSha256(mapping["name_sha256"]),
+        ContentSha256(mapping["content_sha256"]),
+        mapping["size_bytes"],
+    )
+
+
+def _provenance_to_mapping(value: RetrievalProvenance) -> dict[str, Any]:
+    descriptor = value.descriptor
+    return {
+        "descriptor": {
+            "service_name": descriptor.service_name,
+            "message_name": descriptor.message_name,
+            "message_version": descriptor.message_version,
+            "variant": descriptor.variant,
+            "format": descriptor.format,
+            "service_option": descriptor.service_option,
+            "container_type": descriptor.container_type.value,
+            "scope": descriptor.scope,
+        },
+        "protocol_version": value.protocol.protocol_version,
+        "version_number": value.protocol.version_number,
+        "retrieved_at": value.retrieved_at.isoformat(),
+        "transaction_id_sha256": value.transaction_id_sha256.sha256_hex,
+        "segment_count": value.segment_count,
+        "bank_host_id": value.bank_host_id,
+    }
+
+
+def _provenance_from_mapping(mapping: Mapping[str, Any]) -> RetrievalProvenance:
+    descriptor = mapping["descriptor"]
+    retrieved_at = datetime.fromisoformat(mapping["retrieved_at"])
+    return RetrievalProvenance(
+        BtfDescriptor(
+            descriptor["service_name"],
+            descriptor["message_name"],
+            descriptor["message_version"],
+            descriptor["variant"],
+            descriptor["format"],
+            descriptor["service_option"],
+            ContainerType(descriptor["container_type"]),
+            descriptor["scope"],
+        ),
+        # Rejects state written by a release that pinned another version pair.
+        NegotiatedProtocol(
+            protocol_version=mapping["protocol_version"],
+            version_number=mapping["version_number"],
+        ),
+        retrieved_at,
+        ContentSha256(mapping["transaction_id_sha256"]),
+        mapping["segment_count"],
+        mapping["bank_host_id"],
+    )
+
+
+def _staged_document_to_mapping(value: StagedDocument) -> dict[str, Any]:
+    return {
+        "staging_id": value.staging_id.sha256_hex,
+        "provenance": _provenance_to_mapping(value.provenance),
+        "content_sha256": value.content_sha256.sha256_hex,
+        "size_bytes": value.size_bytes,
+        "zip_members": [_zip_member_to_mapping(member) for member in value.zip_members],
+    }
+
+
+def _staged_document_from_mapping(mapping: Mapping[str, Any]) -> StagedDocument:
+    return StagedDocument(
+        DocumentStagingId(mapping["staging_id"]),
+        _provenance_from_mapping(mapping["provenance"]),
+        ContentSha256(mapping["content_sha256"]),
+        mapping["size_bytes"],
+        tuple(_zip_member_from_mapping(member) for member in mapping["zip_members"]),
+    )
+
+
+def _downloaded_document_to_mapping(value: DownloadedDocument) -> dict[str, Any]:
+    return {
+        "staging_id": value.staging_id.sha256_hex,
+        "provenance": _provenance_to_mapping(value.provenance),
+        "content_sha256": value.content_sha256.sha256_hex,
+        "size_bytes": value.size_bytes,
+        "sink_reference": value.sink_reference.value,
+        "zip_members": [_zip_member_to_mapping(member) for member in value.zip_members],
+    }
+
+
+def _downloaded_document_from_mapping(
+    mapping: Mapping[str, Any],
+) -> DownloadedDocument:
+    return DownloadedDocument(
+        DocumentStagingId(mapping["staging_id"]),
+        _provenance_from_mapping(mapping["provenance"]),
+        ContentSha256(mapping["content_sha256"]),
+        mapping["size_bytes"],
+        DocumentReference(mapping["sink_reference"]),
+        tuple(_zip_member_from_mapping(member) for member in mapping["zip_members"]),
+    )
 
 
 @dataclass(frozen=True, slots=True)

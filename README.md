@@ -44,6 +44,10 @@ Current foundation APIs provide:
   strict certificate validation, printable initialization letters, bounded
   segmented downloads, replay rejection, exact receipts, crash recovery, and
   receipt-before-publication document delivery;
+- explicit operator resolution of an unknown positive-receipt outcome, which
+  publishes or discards the already-verified stages instead of dead-ending;
+- JSON-safe session-state projection so a caller-owned store can persist and
+  re-validate resumable state across a restart;
 - production system-clock, CSPRNG nonce, deadline, and cancellation defaults;
 - HTTPS-only TLS 1.2+ transport with certificate verification, no redirects,
   no implicit environment proxy, and bounded responses;
@@ -57,6 +61,20 @@ Every fixed operation has a complete synthetic protocol path. BTD accepts raw
 until a public specification is recorded. Synthetic local-TLS and separately
 supplied official-schema evidence does not establish bank interoperability or
 conformance.
+
+## Getting started
+
+Six seams are deliberately not implemented here, because keys, durable state and
+document storage are application decisions: `KeyProvider`, `BankKeyTrustStore`,
+`SessionStore`, `SegmentStore`, `DocumentSink`, and `OperationControl`. Only the
+last has a shipped default (`DeadlineControl`).
+
+[`examples/local_provider.py`](examples/local_provider.py) is a complete,
+tested, filesystem-backed reference implementation of the other five, and
+[`examples/README.md`](examples/README.md) is the runbook: generate subscriber
+keys, produce the INI and HIA letters, pin the bank keys against out-of-band
+digests, download, and resolve an unknown receipt outcome. The examples are not
+part of the distribution; copy them rather than import them.
 
 ## Development
 

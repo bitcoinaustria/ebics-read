@@ -10,12 +10,39 @@ All notable changes will be recorded here. The project has made no release.
   to `ebics-read`, the Python package to `ebics_read`, and the base exception
   to `EbicsReadError` so the brand describes the structural read-only boundary
   rather than embedding the license name.
-- Raised the `cryptography` dependency floor to 50.0.0 so supported installs do
-  not resolve to the vulnerable 49.0.0 release.
+- Raised the `cryptography` dependency floor to 50.0.0 so supported installs
+  cannot resolve to a release affected by
+  [GHSA-g6cj-pr64-35w5](https://github.com/pyca/cryptography/security/advisories/GHSA-g6cj-pr64-35w5)
+  (CVE-2026-69247, introduced in 44.0.0, fixed in 50.0.0). EBICS Read does not
+  call the affected PKCS#7 `EnvelopedData` decryption helpers, so the floor is
+  defence in depth rather than a fix for a reachable path here.
 - Enforced BTD deadlines and cancellation throughout protected-spool reading,
   base64/AES/zlib processing, ZIP extraction, staging, and publication.
+- Emitted the X002 request `SignatureValue` padded to exactly one modulus width.
+  A key provider that returns the signature as a bignum, dropping leading zero
+  octets, previously passed local verification but put a short value on the wire
+  for roughly one signature in 256.
+- Allowed every client operation to accept an already-negotiated
+  `NegotiatedProtocol`, removing one HEV round trip per call. Omitting it keeps
+  the previous re-negotiating behaviour, and a supplied value cannot widen the
+  accepted versions because it has already passed `select_h005`.
 
 ### Added
+
+- `ReadOnlyClient.resolve_ambiguous_receipt`, an explicit operator decision point
+  for a positive receipt whose outcome the transport could not establish. Such a
+  session previously dead-ended: verified documents stayed staged forever, never
+  published and never discarded, while the spool and session state leaked.
+- `DownloadSession.to_mapping` and `DownloadSession.from_mapping`, so a
+  caller-owned `SessionStore` can persist resumable state at all. Sessions are
+  constructible only through validated transitions, which left no supported way
+  to survive a restart; reloading re-runs every construction invariant.
+- `examples/local_provider.py`, a tested filesystem reference implementation of
+  the five caller-supplied seams that previously shipped no implementation at
+  all, plus `examples/README.md` as the end-to-end runbook. The examples are not
+  part of the distribution.
+- Per-module branch-coverage floors in CI, so the new protocol modules cannot
+  regress behind the aggregate gate.
 
 - Typed read-only operation and trust boundaries.
 - Hardened XML and HTTPS foundations using synthetic tests.

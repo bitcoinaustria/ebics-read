@@ -80,9 +80,12 @@ def _append_x002_auth_signature(
     key_bytes = (public_key.key_size + 7) // 8
     if type(signature) is not bytes or not 1 <= len(signature) <= key_bytes:
         raise SecurityError("X002 provider signature length is invalid")
+    # A provider that strips leading zero octets still verifies, but the wire
+    # value must always be exactly one modulus wide.
+    signature = signature.rjust(key_bytes, b"\0")
     try:
         public_key.verify(
-            signature.rjust(key_bytes, b"\0"),
+            signature,
             canonical_signed_info,
             padding.PKCS1v15(),
             hashes.SHA256(),

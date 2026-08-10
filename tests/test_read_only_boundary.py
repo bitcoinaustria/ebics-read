@@ -216,6 +216,7 @@ def test_public_client_has_only_explicit_protocol_operations() -> None:
         "initialize_auth_encryption_keys",
         "initialize_signature_key",
         "probe_versions",
+        "resolve_ambiguous_receipt",
     }
     forbidden = {
         "execute",
