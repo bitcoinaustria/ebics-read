@@ -8,6 +8,7 @@ transaction key.
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -295,9 +296,11 @@ def test_generated_subscriber_keys_are_three_distinct_roles(tmp_path: Path) -> N
         usage = certificate.extensions.get_extension_for_class(x509.KeyUsage).value
         assert usage.key_encipherment is (purpose is KeyPurpose.ENCRYPTION)
         assert usage.digital_signature is (purpose is not KeyPurpose.ENCRYPTION)
-    # Private key files must not be group- or world-readable.
-    for path in (tmp_path / "keys").glob("*.key.pem"):
-        assert path.stat().st_mode & 0o077 == 0
+    # Private key files must not be group- or world-readable. Windows has no
+    # POSIX mode bits to assert on; chmod there only toggles the read-only flag.
+    if os.name == "posix":
+        for path in (tmp_path / "keys").glob("*.key.pem"):
+            assert path.stat().st_mode & 0o077 == 0
 
     signed = b"synthetic canonical SignedInfo"
     public_key = x509.load_der_x509_certificate(
