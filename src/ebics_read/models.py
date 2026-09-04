@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hmac
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 from hashlib import sha256
+from typing import Any
 from urllib.parse import urlsplit
 
 from .errors import (
@@ -19,11 +21,21 @@ from .orders import DISCOVERY_ORDERS, OrderType
 
 _PROTOCOL_FIELD_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,63}$")
+_H005_SUBSCRIBER_ID = re.compile(r"^[A-Za-z0-9,=]{1,35}$")
 _IBAN = re.compile(r"^[A-Z]{2}[0-9A-Z]{13,32}$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 _SHA256_HEX = re.compile(r"^[0-9A-F]{64}$")
 _PROTOCOL_VERSION = re.compile(r"^H[0-9]{3}$")
 _VERSION_NUMBER = re.compile(r"^[0-9]{2}\.[0-9]{2}$")
+_AUTHENTICATION_VERSION = re.compile(r"^X[0-9]{3}$")
+_ENCRYPTION_VERSION = re.compile(r"^E[0-9]{3}$")
+_SIGNATURE_VERSION = re.compile(r"^A[0-9]{3}$")
+_BTF_SERVICE_NAME = re.compile(r"^[A-Z0-9]{3}$")
+_BTF_MESSAGE_NAME = re.compile(r"^[a-z.0-9]{1,10}$")
+_BTF_SCOPE = re.compile(r"^[A-Z0-9]{2,3}$")
+_BTF_SERVICE_OPTION = re.compile(r"^[A-Z0-9]{3,10}$")
+_BTF_NUMBER = re.compile(r"^[0-9]{2,3}$")
+_BTF_FORMAT = re.compile(r"^[A-Z0-9]{1,4}$")
 _TRUST_CREATION_TOKEN = object()
 _OOB_IDENTITY_TOKEN = object()
 _SESSION_CREATION_TOKEN = object()
@@ -44,12 +56,24 @@ def _require_identifier(name: str, value: str) -> str:
     return value
 
 
+def _require_xml_token(name: str, value: str, max_length: int) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > max_length
+        or value != " ".join(value.split())
+    ):
+        raise ConfigurationError(f"{name} must be a bounded XML token")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Bank:
     """A caller-supplied bank endpoint and EBICS host identifier."""
 
     endpoint: str = field(repr=False)
     host_id: str = field(repr=False)
+    institution_name: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         parts = urlsplit(self.endpoint)
@@ -65,6 +89,10 @@ class Bank:
                 "bank endpoint must be HTTPS without credentials, query, or fragment"
             )
         _require_identifier("host_id", self.host_id)
+        if len(self.host_id) > 35:
+            raise ConfigurationError("host_id exceeds the H005 limit")
+        if self.institution_name is not None:
+            _require_xml_token("institution_name", self.institution_name, 128)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,17 +104,29 @@ class Subscriber:
     system_id: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        _require_identifier("partner_id", self.partner_id)
-        _require_identifier("user_id", self.user_id)
-        if self.system_id is not None:
-            _require_identifier("system_id", self.system_id)
+        for name, value, optional in (
+            ("partner_id", self.partner_id, False),
+            ("user_id", self.user_id, False),
+            ("system_id", self.system_id, True),
+        ):
+            if optional and value is None:
+                continue
+            if (
+                not isinstance(value, str)
+                or _H005_SUBSCRIBER_ID.fullmatch(value) is None
+            ):
+                raise ConfigurationError(
+                    f"{name} must match the H005 subscriber identifier profile"
+                )
 
 
 class ContainerType(str, Enum):
-    """Container handling requested for a BTF download."""
+    """Container handling advertised or requested for a BTF download."""
 
     NONE = "NONE"
     ZIP = "ZIP"
+    XML = "XML"
+    SVC = "SVC"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,22 +135,28 @@ class BtfDescriptor:
 
     service_name: str
     message_name: str
-    message_version: str
-    variant: str
-    format: str
-    service_option: str
+    message_version: str | None
+    variant: str | None
+    format: str | None
+    service_option: str | None
     container_type: ContainerType
     scope: str | None = None
 
     def __post_init__(self) -> None:
-        _require_token("service_name", self.service_name)
-        _require_token("message_name", self.message_name)
-        _require_token("message_version", self.message_version)
-        _require_token("variant", self.variant)
-        _require_token("format", self.format)
-        _require_token("service_option", self.service_option)
-        if self.scope is not None:
-            _require_token("scope", self.scope)
+        values = (
+            ("service_name", self.service_name, _BTF_SERVICE_NAME),
+            ("message_name", self.message_name, _BTF_MESSAGE_NAME),
+            ("message_version", self.message_version, _BTF_NUMBER),
+            ("variant", self.variant, _BTF_NUMBER),
+            ("format", self.format, _BTF_FORMAT),
+            ("service_option", self.service_option, _BTF_SERVICE_OPTION),
+            ("scope", self.scope, _BTF_SCOPE),
+        )
+        for name, value, pattern in values:
+            if value is not None and (
+                not isinstance(value, str) or pattern.fullmatch(value) is None
+            ):
+                raise ConfigurationError(f"{name} is not a valid H005 BTF value")
         if not isinstance(self.container_type, ContainerType):
             raise TypeError("container_type must be a ContainerType")
 
@@ -123,7 +169,7 @@ class DateRange:
     end: date
 
     def __post_init__(self) -> None:
-        if not isinstance(self.start, date) or not isinstance(self.end, date):
+        if type(self.start) is not date or type(self.end) is not date:
             raise TypeError("start and end must be dates")
         if self.start > self.end:
             raise ConfigurationError("date range start must not follow end")
@@ -140,13 +186,18 @@ class AccountSelector:
     def __post_init__(self) -> None:
         if (self.iban is None) == (self.account_id is None):
             raise ConfigurationError("provide exactly one of iban or account_id")
-        if self.iban is not None and _IBAN.fullmatch(self.iban) is None:
+        if self.iban is not None and (
+            not isinstance(self.iban, str) or _IBAN.fullmatch(self.iban) is None
+        ):
             raise ConfigurationError(
                 "iban must be an uppercase, structurally valid IBAN token"
             )
         if self.account_id is not None:
-            _require_identifier("account_id", self.account_id)
-        if self.currency is not None and _CURRENCY.fullmatch(self.currency) is None:
+            _require_xml_token("account_id", self.account_id, 64)
+        if self.currency is not None and (
+            not isinstance(self.currency, str)
+            or _CURRENCY.fullmatch(self.currency) is None
+        ):
             raise ConfigurationError("currency must be a three-letter uppercase code")
 
 
@@ -166,7 +217,7 @@ class DownloadOptions:
 
 @dataclass(frozen=True, slots=True)
 class ProtocolLimits:
-    """Fail-closed resource limits for future BTD processing."""
+    """Fail-closed resource limits for discovery and BTD processing."""
 
     max_segments: int = 10_000
     max_compressed_bytes: int = 64 * 1024 * 1024
@@ -204,9 +255,10 @@ class DownloadPhase(str, Enum):
     SIGNATURES_AND_DIGESTS_VERIFIED = "signatures_and_digests_verified"
     DECRYPTED = "decrypted"
     CONTAINER_VERIFIED = "container_verified"
-    POSITIVE_RECEIPT_SENT = "positive_receipt_sent"
-    NEGATIVE_RECEIPT_SENT = "negative_receipt_sent"
+    DOCUMENTS_STAGED = "documents_staged"
+    RECEIPT_PENDING = "receipt_pending"
     RECEIPT_RESPONSE_VERIFIED = "receipt_response_verified"
+    DOCUMENTS_PUBLISHED = "documents_published"
     RECEIPT_AMBIGUOUS = "receipt_ambiguous"
     COMPLETE = "complete"
     NEGATIVE_COMPLETE = "negative_complete"
@@ -220,35 +272,145 @@ class ReceiptKind(str, Enum):
     NEGATIVE = "negative"
 
 
+@dataclass(frozen=True, slots=True)
+class DownloadRequestIdentity:
+    """Sensitive SHA-256 identity binding one resumable local BTD request."""
+
+    sha256_hex: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.sha256_hex, str)
+            or _SHA256_HEX.fullmatch(self.sha256_hex) is None
+        ):
+            raise ConfigurationError(
+                "download request identity must be 64 uppercase hex characters"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentStagingId:
+    """Deterministic idempotency key for one unpublished document."""
+
+    sha256_hex: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.sha256_hex, str)
+            or _SHA256_HEX.fullmatch(self.sha256_hex) is None
+        ):
+            raise ConfigurationError(
+                "document staging ID must be 64 uppercase hex characters"
+            )
+
+    @classmethod
+    def derive(
+        cls,
+        request_identity: DownloadRequestIdentity,
+        transaction_id: TransactionId,
+        document_position: int,
+    ) -> DocumentStagingId:
+        """Bind one stage to its request, authenticated transaction, and position."""
+
+        if not isinstance(request_identity, DownloadRequestIdentity):
+            raise TypeError("request_identity must be a DownloadRequestIdentity")
+        if not isinstance(transaction_id, TransactionId):
+            raise TypeError("transaction_id must be a TransactionId")
+        if (
+            type(document_position) is not int
+            or document_position < 1
+            or document_position > 0xFFFFFFFF
+        ):
+            raise ConfigurationError(
+                "document_position must be between 1 and 4294967295"
+            )
+        digest = sha256(
+            b"ebics-read:document-stage:v1\0"
+            + bytes.fromhex(request_identity.sha256_hex)
+            + bytes.fromhex(transaction_id.value)
+            + document_position.to_bytes(4, "big")
+        )
+        return cls(digest.hexdigest().upper())
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentReference:
+    """Opaque caller-sink reference to one published document."""
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.value, str)
+            or not self.value
+            or len(self.value) > 256
+            or any(ord(character) < 0x20 for character in self.value)
+        ):
+            raise ConfigurationError(
+                "document reference must be bounded printable text"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionId:
+    """One exact, sensitive 128-bit bank transaction identifier."""
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.value, str)
+            or re.fullmatch(r"[0-9A-F]{32}", self.value) is None
+        ):
+            raise ConfigurationError(
+                "transaction ID must be 16 bytes in uppercase hexadecimal"
+            )
+
+    @classmethod
+    def from_bytes(cls, value: bytes) -> TransactionId:
+        if not isinstance(value, bytes):
+            raise TypeError("transaction ID bytes must be bytes")
+        if len(value) != 16:
+            raise ConfigurationError("transaction ID must contain exactly 16 bytes")
+        return cls(value.hex().upper())
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class DownloadSession:
     """Immutable BTD state constructible only through validated transitions."""
 
     session_id: str = field(repr=False, init=False)
+    request_identity: DownloadRequestIdentity = field(repr=False, init=False)
     phase: DownloadPhase = field(init=False)
-    transaction_id: str | None = field(default=None, repr=False)
+    transaction_id: TransactionId | None = field(default=None, repr=False)
     next_segment: int = field(init=False)
     total_segments: int | None = field(init=False)
     max_segments: int = field(init=False)
     revision: int = field(init=False)
     receipt_kind: ReceiptKind | None = field(init=False)
+    staged_documents: tuple[StagedDocument, ...] = field(repr=False, init=False)
+    published_documents: tuple[DownloadedDocument, ...] = field(repr=False, init=False)
 
     def __init__(
         self,
         session_id: str,
+        request_identity: DownloadRequestIdentity,
         phase: DownloadPhase,
-        transaction_id: str | None,
+        transaction_id: TransactionId | None,
         next_segment: int,
         total_segments: int | None,
         max_segments: int,
         revision: int,
         receipt_kind: ReceiptKind | None,
+        staged_documents: tuple[StagedDocument, ...],
+        published_documents: tuple[DownloadedDocument, ...],
         *,
         _creation_token: object | None = None,
     ) -> None:
         if _creation_token is not _SESSION_CREATION_TOKEN:
             raise TypeError("download sessions are created through state methods")
         object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "request_identity", request_identity)
         object.__setattr__(self, "phase", phase)
         object.__setattr__(self, "transaction_id", transaction_id)
         object.__setattr__(self, "next_segment", next_segment)
@@ -256,11 +418,17 @@ class DownloadSession:
         object.__setattr__(self, "max_segments", max_segments)
         object.__setattr__(self, "revision", revision)
         object.__setattr__(self, "receipt_kind", receipt_kind)
+        object.__setattr__(self, "staged_documents", tuple(staged_documents))
+        object.__setattr__(self, "published_documents", tuple(published_documents))
         _require_identifier("session_id", self.session_id)
+        if not isinstance(self.request_identity, DownloadRequestIdentity):
+            raise TypeError("request_identity must be a DownloadRequestIdentity")
         if not isinstance(self.phase, DownloadPhase):
             raise TypeError("phase must be a DownloadPhase")
-        if self.transaction_id is not None:
-            _require_identifier("transaction_id", self.transaction_id)
+        if self.transaction_id is not None and not isinstance(
+            self.transaction_id, TransactionId
+        ):
+            raise TypeError("transaction_id must be a TransactionId")
         if type(self.next_segment) is not int:
             raise TypeError("next_segment must be an integer")
         if self.next_segment <= 0:
@@ -282,22 +450,36 @@ class DownloadSession:
             self.receipt_kind, ReceiptKind
         ):
             raise TypeError("receipt_kind must be a ReceiptKind")
+        if not all(
+            isinstance(value, StagedDocument) for value in self.staged_documents
+        ):
+            raise TypeError("staged_documents must contain StagedDocument values")
+        if not all(
+            isinstance(value, DownloadedDocument) for value in self.published_documents
+        ):
+            raise TypeError(
+                "published_documents must contain DownloadedDocument values"
+            )
         self._validate_coherence()
 
     @classmethod
     def _create(
         cls,
         session_id: str,
+        request_identity: DownloadRequestIdentity,
         phase: DownloadPhase,
-        transaction_id: str | None,
+        transaction_id: TransactionId | None,
         next_segment: int,
         total_segments: int | None,
         max_segments: int,
         revision: int,
         receipt_kind: ReceiptKind | None,
+        staged_documents: tuple[StagedDocument, ...],
+        published_documents: tuple[DownloadedDocument, ...],
     ) -> DownloadSession:
         return cls(
             session_id,
+            request_identity,
             phase,
             transaction_id,
             next_segment,
@@ -305,17 +487,93 @@ class DownloadSession:
             max_segments,
             revision,
             receipt_kind,
+            staged_documents,
+            published_documents,
             _creation_token=_SESSION_CREATION_TOKEN,
         )
 
+    def to_mapping(self) -> dict[str, Any]:
+        """Project this state onto JSON-safe primitives for a persistent store.
+
+        A ``SessionStore`` cannot construct a session directly, so this and
+        :meth:`from_mapping` are the only supported way to survive a restart.
+        The result contains sensitive identifiers and must be stored with the
+        same confidentiality as the spool.
+        """
+
+        return {
+            "session_id": self.session_id,
+            "request_identity": self.request_identity.sha256_hex,
+            "phase": self.phase.value,
+            "transaction_id": (
+                None if self.transaction_id is None else self.transaction_id.value
+            ),
+            "next_segment": self.next_segment,
+            "total_segments": self.total_segments,
+            "max_segments": self.max_segments,
+            "revision": self.revision,
+            "receipt_kind": (
+                None if self.receipt_kind is None else self.receipt_kind.value
+            ),
+            "staged_documents": [
+                _staged_document_to_mapping(value) for value in self.staged_documents
+            ],
+            "published_documents": [
+                _downloaded_document_to_mapping(value)
+                for value in self.published_documents
+            ],
+        }
+
     @classmethod
-    def start(cls, session_id: str, limits: ProtocolLimits) -> DownloadSession:
+    def from_mapping(cls, mapping: Mapping[str, Any]) -> DownloadSession:
+        """Rebuild persisted state, re-running every construction invariant.
+
+        Stored state is treated as untrusted input: anything that does not
+        reconstruct into a coherent session fails closed.
+        """
+
+        if not isinstance(mapping, Mapping):
+            raise TypeError("persisted download session must be a mapping")
+        if set(mapping) != _DOWNLOAD_SESSION_KEYS:
+            raise ConfigurationError(
+                "persisted download session has unexpected or missing keys"
+            )
+        transaction_id = mapping["transaction_id"]
+        receipt_kind = mapping["receipt_kind"]
+        return cls._create(
+            mapping["session_id"],
+            DownloadRequestIdentity(mapping["request_identity"]),
+            DownloadPhase(mapping["phase"]),
+            None if transaction_id is None else TransactionId(transaction_id),
+            mapping["next_segment"],
+            mapping["total_segments"],
+            mapping["max_segments"],
+            mapping["revision"],
+            None if receipt_kind is None else ReceiptKind(receipt_kind),
+            tuple(
+                _staged_document_from_mapping(value)
+                for value in mapping["staged_documents"]
+            ),
+            tuple(
+                _downloaded_document_from_mapping(value)
+                for value in mapping["published_documents"]
+            ),
+        )
+
+    @classmethod
+    def start(
+        cls,
+        session_id: str,
+        request_identity: DownloadRequestIdentity,
+        limits: ProtocolLimits,
+    ) -> DownloadSession:
         """Start a transaction before a bank transaction ID exists."""
 
         if not isinstance(limits, ProtocolLimits):
             raise TypeError("limits must be ProtocolLimits")
         return cls._create(
             session_id,
+            request_identity,
             DownloadPhase.NEW,
             None,
             1,
@@ -323,6 +581,8 @@ class DownloadSession:
             limits.max_segments,
             0,
             None,
+            (),
+            (),
         )
 
     @classmethod
@@ -330,18 +590,22 @@ class DownloadSession:
         cls,
         *,
         session_id: str,
+        request_identity: DownloadRequestIdentity,
         phase: DownloadPhase,
-        transaction_id: str | None,
+        transaction_id: TransactionId | None,
         next_segment: int,
         total_segments: int | None,
         max_segments: int,
         revision: int,
         receipt_kind: ReceiptKind | None = None,
+        staged_documents: tuple[StagedDocument, ...] = (),
+        published_documents: tuple[DownloadedDocument, ...] = (),
     ) -> DownloadSession:
         """Restore host-persisted state after applying every invariant."""
 
         return cls._create(
             session_id,
+            request_identity,
             phase,
             transaction_id,
             next_segment,
@@ -349,16 +613,19 @@ class DownloadSession:
             max_segments,
             revision,
             receipt_kind,
+            staged_documents,
+            published_documents,
         )
 
     def initialize(
-        self, *, transaction_id: str, total_segments: int
+        self, *, transaction_id: TransactionId, total_segments: int
     ) -> DownloadSession:
         """Accept authenticated initialization metadata."""
 
         self._require_phase(DownloadPhase.NEW)
         return self._create(
             self.session_id,
+            self.request_identity,
             DownloadPhase.INITIALIZED,
             transaction_id,
             1,
@@ -366,6 +633,8 @@ class DownloadSession:
             self.max_segments,
             self.revision + 1,
             None,
+            (),
+            (),
         )
 
     def record_segment(self, segment_number: int) -> DownloadSession:
@@ -391,7 +660,7 @@ class DownloadSession:
         return self._advance(phase, next_segment=next_segment)
 
     def mark_signatures_and_digests_verified(self) -> DownloadSession:
-        """Record authentication of every response and order-data digest."""
+        """Record X002 response and recipient-key-digest verification."""
 
         self._require_phase(DownloadPhase.SEGMENTS_RECEIVED)
         return self._advance(DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED)
@@ -408,75 +677,165 @@ class DownloadSession:
         self._require_phase(DownloadPhase.DECRYPTED)
         return self._advance(DownloadPhase.CONTAINER_VERIFIED)
 
-    def mark_positive_receipt_sent(self) -> DownloadSession:
-        """Send code 0 only after the payload is fully acceptable."""
+    def mark_documents_staged(
+        self, documents: tuple[StagedDocument, ...]
+    ) -> DownloadSession:
+        """Persist accepted plaintext identities without publishing plaintext."""
 
         self._require_phase(DownloadPhase.CONTAINER_VERIFIED)
+        if not documents:
+            raise ConfigurationError("at least one staged document is required")
         return self._advance(
-            DownloadPhase.POSITIVE_RECEIPT_SENT,
+            DownloadPhase.DOCUMENTS_STAGED, staged_documents=tuple(documents)
+        )
+
+    def mark_positive_receipt_pending(self) -> DownloadSession:
+        """Persist code 0 intent before any receipt request bytes are sent."""
+
+        self._require_phase(DownloadPhase.DOCUMENTS_STAGED)
+        return self._advance(
+            DownloadPhase.RECEIPT_PENDING,
             receipt_kind=ReceiptKind.POSITIVE,
         )
 
-    def mark_negative_receipt_sent(self) -> DownloadSession:
-        """Send code 1 after complete transfer but failed payload processing."""
+    def mark_negative_receipt_pending(self) -> DownloadSession:
+        """Persist code 1 intent before any receipt request bytes are sent."""
 
         if self.phase not in {
             DownloadPhase.SEGMENTS_RECEIVED,
             DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED,
             DownloadPhase.DECRYPTED,
+            DownloadPhase.CONTAINER_VERIFIED,
         }:
             raise ConfigurationError("negative receipt is not valid in this phase")
         return self._advance(
-            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_PENDING,
             receipt_kind=ReceiptKind.NEGATIVE,
         )
 
     def mark_receipt_ambiguous(self) -> DownloadSession:
         """Record an unknown receipt outcome after transmission began."""
 
-        if self.phase not in {
-            DownloadPhase.POSITIVE_RECEIPT_SENT,
-            DownloadPhase.NEGATIVE_RECEIPT_SENT,
-        }:
-            raise ConfigurationError("receipt ambiguity requires a sent receipt")
+        if self.phase is not DownloadPhase.RECEIPT_PENDING:
+            raise ConfigurationError("receipt ambiguity requires pending receipt I/O")
         return self._advance(DownloadPhase.RECEIPT_AMBIGUOUS)
 
     def mark_receipt_response_verified(self) -> DownloadSession:
         """Record an authenticated response with the expected receipt return code."""
 
         if self.phase not in {
-            DownloadPhase.POSITIVE_RECEIPT_SENT,
-            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_PENDING,
             DownloadPhase.RECEIPT_AMBIGUOUS,
         }:
             raise ConfigurationError("receipt response is not expected in this phase")
         return self._advance(DownloadPhase.RECEIPT_RESPONSE_VERIFIED)
 
+    def mark_documents_published(
+        self, documents: tuple[DownloadedDocument, ...]
+    ) -> DownloadSession:
+        """Persist idempotently published results after a positive receipt."""
+
+        self._require_phase(DownloadPhase.RECEIPT_RESPONSE_VERIFIED)
+        if self.receipt_kind is not ReceiptKind.POSITIVE:
+            raise ConfigurationError("only a positive receipt publishes documents")
+        published = tuple(documents)
+        if len(published) != len(self.staged_documents) or any(
+            (
+                staged.staging_id,
+                staged.provenance,
+                staged.content_sha256,
+                staged.size_bytes,
+                staged.zip_members,
+            )
+            != (
+                document.staging_id,
+                document.provenance,
+                document.content_sha256,
+                document.size_bytes,
+                document.zip_members,
+            )
+            for staged, document in zip(self.staged_documents, published, strict=True)
+        ):
+            raise ConfigurationError(
+                "published documents do not match staged documents"
+            )
+        return self._advance(
+            DownloadPhase.DOCUMENTS_PUBLISHED, published_documents=published
+        )
+
     def finish(self) -> DownloadSession:
         """Finish only after the receipt response has been authenticated."""
 
-        self._require_phase(DownloadPhase.RECEIPT_RESPONSE_VERIFIED)
-        target = (
-            DownloadPhase.COMPLETE
-            if self.receipt_kind is ReceiptKind.POSITIVE
-            else DownloadPhase.NEGATIVE_COMPLETE
-        )
+        if self.receipt_kind is ReceiptKind.POSITIVE:
+            self._require_phase(DownloadPhase.DOCUMENTS_PUBLISHED)
+            target = DownloadPhase.COMPLETE
+        else:
+            self._require_phase(DownloadPhase.RECEIPT_RESPONSE_VERIFIED)
+            target = DownloadPhase.NEGATIVE_COMPLETE
         return self._advance(target)
 
     def fail(self) -> DownloadSession:
-        """Enter terminal failure from a non-terminal state."""
+        """Enter terminal failure after any unpersisted sink stage was discarded."""
 
         if self.phase in {
-            DownloadPhase.POSITIVE_RECEIPT_SENT,
-            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_PENDING,
+            DownloadPhase.DOCUMENTS_STAGED,
             DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
+            DownloadPhase.DOCUMENTS_PUBLISHED,
             DownloadPhase.RECEIPT_AMBIGUOUS,
             DownloadPhase.COMPLETE,
             DownloadPhase.NEGATIVE_COMPLETE,
             DownloadPhase.FAILED,
         }:
             raise ConfigurationError("terminal download session cannot be reused")
-        return self._advance(DownloadPhase.FAILED)
+        return self._advance(
+            DownloadPhase.FAILED, staged_documents=(), published_documents=()
+        )
+
+    def is_exact_successor_of(self, previous: DownloadSession) -> bool:
+        """Validate one generic CAS transition; initialization has its own operation."""
+
+        if not isinstance(previous, DownloadSession):
+            raise TypeError("previous must be a DownloadSession")
+
+        try:
+            if self.phase in {
+                DownloadPhase.RECEIVING_SEGMENTS,
+                DownloadPhase.SEGMENTS_RECEIVED,
+            }:
+                expected = previous.record_segment(previous.next_segment)
+            elif self.phase is DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED:
+                expected = previous.mark_signatures_and_digests_verified()
+            elif self.phase is DownloadPhase.DECRYPTED:
+                expected = previous.mark_decrypted()
+            elif self.phase is DownloadPhase.CONTAINER_VERIFIED:
+                expected = previous.mark_container_verified()
+            elif self.phase is DownloadPhase.DOCUMENTS_STAGED:
+                expected = previous.mark_documents_staged(self.staged_documents)
+            elif self.phase is DownloadPhase.RECEIPT_PENDING:
+                expected = (
+                    previous.mark_positive_receipt_pending()
+                    if self.receipt_kind is ReceiptKind.POSITIVE
+                    else previous.mark_negative_receipt_pending()
+                )
+            elif self.phase is DownloadPhase.RECEIPT_AMBIGUOUS:
+                expected = previous.mark_receipt_ambiguous()
+            elif self.phase is DownloadPhase.RECEIPT_RESPONSE_VERIFIED:
+                expected = previous.mark_receipt_response_verified()
+            elif self.phase is DownloadPhase.DOCUMENTS_PUBLISHED:
+                expected = previous.mark_documents_published(self.published_documents)
+            elif self.phase in {
+                DownloadPhase.COMPLETE,
+                DownloadPhase.NEGATIVE_COMPLETE,
+            }:
+                expected = previous.finish()
+            elif self.phase is DownloadPhase.FAILED:
+                expected = previous.fail()
+            else:
+                return False
+        except (ConfigurationError, TypeError):
+            return False
+        return self == expected
 
     def _advance(
         self,
@@ -484,9 +843,12 @@ class DownloadSession:
         *,
         next_segment: int | None = None,
         receipt_kind: ReceiptKind | None = None,
+        staged_documents: tuple[StagedDocument, ...] | None = None,
+        published_documents: tuple[DownloadedDocument, ...] | None = None,
     ) -> DownloadSession:
         return self._create(
             self.session_id,
+            self.request_identity,
             phase,
             self.transaction_id,
             self.next_segment if next_segment is None else next_segment,
@@ -494,6 +856,12 @@ class DownloadSession:
             self.max_segments,
             self.revision + 1,
             self.receipt_kind if receipt_kind is None else receipt_kind,
+            (self.staged_documents if staged_documents is None else staged_documents),
+            (
+                self.published_documents
+                if published_documents is None
+                else published_documents
+            ),
         )
 
     def _require_phase(self, phase: DownloadPhase) -> None:
@@ -507,6 +875,8 @@ class DownloadSession:
                 or self.total_segments is not None
                 or self.next_segment != 1
                 or self.receipt_kind is not None
+                or self.staged_documents
+                or self.published_documents
             ):
                 raise ConfigurationError("new session contains transaction state")
             return
@@ -515,6 +885,8 @@ class DownloadSession:
                 self.total_segments is not None
                 or self.next_segment != 1
                 or self.receipt_kind is not None
+                or self.staged_documents
+                or self.published_documents
             ):
                 raise ConfigurationError(
                     "failed pre-initialization state is incoherent"
@@ -534,10 +906,11 @@ class DownloadSession:
                 DownloadPhase.SIGNATURES_AND_DIGESTS_VERIFIED,
                 DownloadPhase.DECRYPTED,
                 DownloadPhase.CONTAINER_VERIFIED,
-                DownloadPhase.POSITIVE_RECEIPT_SENT,
-                DownloadPhase.NEGATIVE_RECEIPT_SENT,
+                DownloadPhase.DOCUMENTS_STAGED,
+                DownloadPhase.RECEIPT_PENDING,
                 DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
                 DownloadPhase.RECEIPT_AMBIGUOUS,
+                DownloadPhase.DOCUMENTS_PUBLISHED,
                 DownloadPhase.COMPLETE,
                 DownloadPhase.NEGATIVE_COMPLETE,
             }
@@ -554,25 +927,89 @@ class DownloadSession:
         ):
             raise ConfigurationError("active session has no remaining segment")
         receipt_phases = {
-            DownloadPhase.POSITIVE_RECEIPT_SENT,
-            DownloadPhase.NEGATIVE_RECEIPT_SENT,
+            DownloadPhase.RECEIPT_PENDING,
             DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
             DownloadPhase.RECEIPT_AMBIGUOUS,
+            DownloadPhase.DOCUMENTS_PUBLISHED,
             DownloadPhase.COMPLETE,
             DownloadPhase.NEGATIVE_COMPLETE,
         }
         if (self.phase in receipt_phases) != (self.receipt_kind is not None):
             raise ConfigurationError("receipt state and receipt kind disagree")
-        if (
-            self.phase is DownloadPhase.POSITIVE_RECEIPT_SENT
-            and self.receipt_kind is not ReceiptKind.POSITIVE
+        staged_phases = {
+            DownloadPhase.DOCUMENTS_STAGED,
+            DownloadPhase.DOCUMENTS_PUBLISHED,
+            DownloadPhase.COMPLETE,
+        }
+        if self.phase in {
+            DownloadPhase.RECEIPT_PENDING,
+            DownloadPhase.RECEIPT_RESPONSE_VERIFIED,
+            DownloadPhase.RECEIPT_AMBIGUOUS,
+        }:
+            expects_staged = self.receipt_kind is ReceiptKind.POSITIVE
+        else:
+            expects_staged = self.phase in staged_phases
+        if bool(self.staged_documents) is not expects_staged:
+            raise ConfigurationError("staged documents and transaction phase disagree")
+        if self.staged_documents:
+            staging_ids = [document.staging_id for document in self.staged_documents]
+            if len(staging_ids) != len(set(staging_ids)):
+                raise ConfigurationError("staged document IDs must be unique")
+            if any(
+                document.staging_id
+                != DocumentStagingId.derive(
+                    self.request_identity, self.transaction_id, position
+                )
+                for position, document in enumerate(self.staged_documents, start=1)
+            ):
+                raise ConfigurationError(
+                    "staged document ID does not match its transaction position"
+                )
+            transaction_hash = ContentSha256.from_bytes(
+                bytes.fromhex(self.transaction_id.value)
+            )
+            if any(
+                document.provenance.transaction_id_sha256 != transaction_hash
+                or document.provenance.segment_count != self.total_segments
+                for document in self.staged_documents
+            ):
+                raise ConfigurationError(
+                    "staged document provenance does not match the transaction"
+                )
+        published_phases = {
+            DownloadPhase.DOCUMENTS_PUBLISHED,
+            DownloadPhase.COMPLETE,
+        }
+        if bool(self.published_documents) is not (self.phase in published_phases):
+            raise ConfigurationError(
+                "published documents and transaction phase disagree"
+            )
+        if self.published_documents and len(self.published_documents) != len(
+            self.staged_documents
         ):
-            raise ConfigurationError("positive receipt state has wrong receipt kind")
-        if (
-            self.phase is DownloadPhase.NEGATIVE_RECEIPT_SENT
-            and self.receipt_kind is not ReceiptKind.NEGATIVE
+            raise ConfigurationError("published and staged document counts disagree")
+        if self.published_documents and any(
+            (
+                staged.staging_id,
+                staged.provenance,
+                staged.content_sha256,
+                staged.size_bytes,
+                staged.zip_members,
+            )
+            != (
+                document.staging_id,
+                document.provenance,
+                document.content_sha256,
+                document.size_bytes,
+                document.zip_members,
+            )
+            for staged, document in zip(
+                self.staged_documents, self.published_documents, strict=True
+            )
         ):
-            raise ConfigurationError("negative receipt state has wrong receipt kind")
+            raise ConfigurationError(
+                "published documents do not match staged documents"
+            )
         if (
             self.phase is DownloadPhase.COMPLETE
             and self.receipt_kind is not ReceiptKind.POSITIVE
@@ -680,24 +1117,258 @@ class ServiceCapability:
             raise TypeError("descriptor must be a BtfDescriptor")
         if not isinstance(self.source_order, OrderType):
             raise TypeError("source_order must be an OrderType")
-        if self.source_order not in DISCOVERY_ORDERS:
+        if self.source_order not in {
+            OrderType.HAA,
+            OrderType.HKD,
+            OrderType.HTD,
+        }:
             raise ConfigurationError("capability source must be a discovery order")
+
+
+@dataclass(frozen=True, slots=True)
+class AdvertisedBankUrl:
+    """An informational HPD endpoint; never an automatic redirect target."""
+
+    value: str = field(repr=False)
+    valid_from: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, str) or not 0 < len(self.value) <= 2048:
+            raise ConfigurationError("advertised bank URL must be a bounded string")
+        if self.valid_from is not None and not isinstance(self.valid_from, datetime):
+            raise TypeError("valid_from must be a datetime")
+
+
+@dataclass(frozen=True, slots=True)
+class BankParameters:
+    """Read-relevant HPD access and protocol parameters."""
+
+    urls: tuple[AdvertisedBankUrl, ...]
+    institute: str = field(repr=False)
+    host_id: str | None = field(repr=False)
+    protocol_versions: tuple[str, ...]
+    authentication_versions: tuple[str, ...]
+    encryption_versions: tuple[str, ...]
+    signature_versions: tuple[str, ...]
+    recovery_supported: bool
+    client_data_download_supported: bool
+    downloadable_order_data_supported: bool
+    updated_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "urls",
+            "protocol_versions",
+            "authentication_versions",
+            "encryption_versions",
+            "signature_versions",
+        ):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        if not self.urls or not all(
+            isinstance(value, AdvertisedBankUrl) for value in self.urls
+        ):
+            raise ConfigurationError("bank parameters require advertised URLs")
+        if (
+            not isinstance(self.institute, str)
+            or "\n" in self.institute
+            or "\r" in self.institute
+            or "\t" in self.institute
+            or len(self.institute) > 80
+        ):
+            raise ConfigurationError(
+                "institute must be a normalized string up to 80 chars"
+            )
+        if self.host_id is not None:
+            _require_xml_token("host_id", self.host_id, 35)
+        versions = (
+            ("protocol_versions", self.protocol_versions, _PROTOCOL_VERSION),
+            (
+                "authentication_versions",
+                self.authentication_versions,
+                _AUTHENTICATION_VERSION,
+            ),
+            ("encryption_versions", self.encryption_versions, _ENCRYPTION_VERSION),
+            ("signature_versions", self.signature_versions, _SIGNATURE_VERSION),
+        )
+        for name, values, pattern in versions:
+            if not values or not all(
+                isinstance(value, str) and pattern.fullmatch(value) is not None
+                for value in values
+            ):
+                raise ConfigurationError(f"{name} contains invalid version values")
+            if len(values) != len(set(values)):
+                raise ConfigurationError(f"{name} contains duplicate versions")
+        if not all(
+            type(value) is bool
+            for value in (
+                self.recovery_supported,
+                self.client_data_download_supported,
+                self.downloadable_order_data_supported,
+            )
+        ):
+            raise TypeError("HPD support flags must be booleans")
+        if self.updated_at is not None and not isinstance(self.updated_at, datetime):
+            raise TypeError("updated_at must be a datetime")
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredAccount:
+    """Minimum account identity needed to restrict a future BTD request."""
+
+    account_id: str = field(repr=False)
+    iban: str | None = field(default=None, repr=False)
+    currency: str = field(default="EUR", repr=False)
+    restricted_services: tuple[BtfDescriptor, ...] | None = field(
+        default=None, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        _require_xml_token("account_id", self.account_id, 64)
+        if self.iban is not None and (
+            not isinstance(self.iban, str) or _IBAN.fullmatch(self.iban) is None
+        ):
+            raise ConfigurationError("iban must be an uppercase IBAN token")
+        if (
+            not isinstance(self.currency, str)
+            or _CURRENCY.fullmatch(self.currency) is None
+        ):
+            raise ConfigurationError("currency must be a three-letter uppercase code")
+        if self.restricted_services is not None:
+            object.__setattr__(
+                self, "restricted_services", tuple(self.restricted_services)
+            )
+            if not all(
+                isinstance(value, BtfDescriptor) for value in self.restricted_services
+            ):
+                raise TypeError("restricted_services must contain BtfDescriptor values")
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadPermission:
+    """One HKD/HTD subscriber permission for the only business order, BTD."""
+
+    descriptor: BtfDescriptor = field(repr=False)
+    account_id: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.descriptor, BtfDescriptor):
+            raise TypeError("descriptor must be a BtfDescriptor")
+        if self.account_id is not None:
+            _require_xml_token("account_id", self.account_id, 64)
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredUser:
+    """One bank-reported subscriber and its BTD-only permissions."""
+
+    user_id: str = field(repr=False)
+    status: int = field(repr=False)
+    permissions: tuple[DownloadPermission, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.user_id, str)
+            or _H005_SUBSCRIBER_ID.fullmatch(self.user_id) is None
+        ):
+            raise ConfigurationError("user_id is not a valid H005 subscriber ID")
+        if type(self.status) is not int or not 0 <= self.status <= 99:
+            raise ConfigurationError("subscriber status must be between 0 and 99")
+        object.__setattr__(self, "permissions", tuple(self.permissions))
+        if not all(isinstance(value, DownloadPermission) for value in self.permissions):
+            raise TypeError("permissions must contain DownloadPermission values")
+        if len(self.permissions) != len(set(self.permissions)):
+            raise ConfigurationError("subscriber contains duplicate BTD permissions")
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerInformation:
+    """Read-relevant HKD or HTD customer, account, and subscriber data."""
+
+    source_order: OrderType
+    host_id: str = field(repr=False)
+    accounts: tuple[DiscoveredAccount, ...] = field(repr=False)
+    services: tuple[ServiceCapability, ...] = field(repr=False)
+    users: tuple[DiscoveredUser, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if self.source_order not in {OrderType.HKD, OrderType.HTD}:
+            raise ConfigurationError("customer information must come from HKD or HTD")
+        _require_xml_token("host_id", self.host_id, 35)
+        for name in ("accounts", "services", "users"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        if not all(isinstance(value, DiscoveredAccount) for value in self.accounts):
+            raise TypeError("accounts must contain DiscoveredAccount values")
+        if not all(isinstance(value, ServiceCapability) for value in self.services):
+            raise TypeError("services must contain ServiceCapability values")
+        if not self.users or not all(
+            isinstance(value, DiscoveredUser) for value in self.users
+        ):
+            raise ConfigurationError("customer information requires discovered users")
+        if self.source_order is OrderType.HTD and len(self.users) != 1:
+            raise ConfigurationError("HTD must describe exactly one subscriber")
+        if any(value.source_order is not self.source_order for value in self.services):
+            raise ConfigurationError(
+                "service source does not match customer data source"
+            )
+        account_ids = [value.account_id for value in self.accounts]
+        if len(account_ids) != len(set(account_ids)):
+            raise ConfigurationError(
+                "customer information contains duplicate account IDs"
+            )
+        known_accounts = set(account_ids)
+        user_ids = [value.user_id for value in self.users]
+        if len(user_ids) != len(set(user_ids)):
+            raise ConfigurationError("customer information contains duplicate users")
+        customer_descriptors = {value.descriptor for value in self.services}
+        if any(
+            permission.descriptor not in customer_descriptors
+            for user in self.users
+            for permission in user.permissions
+        ):
+            raise ConfigurationError(
+                "subscriber permission is absent from customer services"
+            )
+        if any(
+            permission.account_id not in known_accounts
+            for user in self.users
+            for permission in user.permissions
+            if permission.account_id is not None
+        ):
+            raise ConfigurationError("permission references an unknown account")
 
 
 @dataclass(frozen=True, slots=True)
 class CapabilityDiscovery:
     """Defensive union of supported discovery-order results."""
 
-    services: tuple[ServiceCapability, ...] = ()
+    services: tuple[ServiceCapability, ...] = field(default=(), repr=False)
     completed_orders: tuple[OrderType, ...] = ()
     unsupported_orders: tuple[OrderType, ...] = ()
+    bank_parameters: BankParameters | None = None
+    customer_information: tuple[CustomerInformation, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "services", tuple(self.services))
+        object.__setattr__(
+            self, "customer_information", tuple(self.customer_information)
+        )
         object.__setattr__(self, "completed_orders", tuple(self.completed_orders))
         object.__setattr__(self, "unsupported_orders", tuple(self.unsupported_orders))
         if not all(isinstance(value, ServiceCapability) for value in self.services):
             raise TypeError("services must contain ServiceCapability values")
+        if len(self.services) != len(set(self.services)):
+            raise ConfigurationError("capability results contain duplicate services")
+        if self.bank_parameters is not None and not isinstance(
+            self.bank_parameters, BankParameters
+        ):
+            raise TypeError("bank_parameters must be BankParameters")
+        if not all(
+            isinstance(value, CustomerInformation)
+            for value in self.customer_information
+        ):
+            raise TypeError(
+                "customer_information must contain CustomerInformation values"
+            )
         if not all(
             isinstance(value, OrderType)
             for value in (*self.completed_orders, *self.unsupported_orders)
@@ -710,6 +1381,40 @@ class CapabilityDiscovery:
             raise ConfigurationError("capability results accept discovery orders only")
         if set(self.completed_orders) & set(self.unsupported_orders):
             raise ConfigurationError("an order cannot be completed and unsupported")
+        if len(self.completed_orders) != len(set(self.completed_orders)) or len(
+            self.unsupported_orders
+        ) != len(set(self.unsupported_orders)):
+            raise ConfigurationError("capability results contain duplicate orders")
+        if any(
+            value.source_order not in self.completed_orders for value in self.services
+        ):
+            raise ConfigurationError("service capability requires its completed order")
+        customer_services = {
+            service
+            for customer in self.customer_information
+            for service in customer.services
+        }
+        aggregate_customer_services = {
+            service
+            for service in self.services
+            if service.source_order in {OrderType.HKD, OrderType.HTD}
+        }
+        if customer_services != aggregate_customer_services:
+            raise ConfigurationError("aggregate and customer services must agree")
+        if (self.bank_parameters is not None) != (
+            OrderType.HPD in self.completed_orders
+        ):
+            raise ConfigurationError("HPD completion and bank parameters must agree")
+        customer_orders = [value.source_order for value in self.customer_information]
+        if len(customer_orders) != len(set(customer_orders)):
+            raise ConfigurationError("customer discovery order appears more than once")
+        if any(value not in self.completed_orders for value in customer_orders):
+            raise ConfigurationError("customer data requires its completed order")
+        if any(
+            value in self.completed_orders and value not in customer_orders
+            for value in (OrderType.HKD, OrderType.HTD)
+        ):
+            raise ConfigurationError("HKD/HTD completion requires customer data")
 
 
 @dataclass(frozen=True, slots=True)
@@ -943,26 +1648,48 @@ class InitializationLetter:
 class DownloadedDocument:
     """Small verified result referring to bytes atomically committed by a sink."""
 
+    staging_id: DocumentStagingId = field(repr=False)
     provenance: RetrievalProvenance
     content_sha256: ContentSha256
     size_bytes: int
-    sink_reference: str = field(repr=False)
+    sink_reference: DocumentReference = field(repr=False)
     zip_members: tuple[ZipMemberIdentity, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.staging_id, DocumentStagingId):
+            raise TypeError("staging_id must be a DocumentStagingId")
         if not isinstance(self.provenance, RetrievalProvenance):
             raise TypeError("provenance must be RetrievalProvenance")
         if not isinstance(self.content_sha256, ContentSha256):
             raise TypeError("content_sha256 must be ContentSha256")
         if type(self.size_bytes) is not int or self.size_bytes <= 0:
             raise ConfigurationError("size_bytes must be a positive integer")
-        if (
-            not isinstance(self.sink_reference, str)
-            or not self.sink_reference
-            or len(self.sink_reference) > 256
-            or any(ord(value) < 0x20 for value in self.sink_reference)
-        ):
-            raise ConfigurationError("sink_reference must be bounded printable text")
+        if not isinstance(self.sink_reference, DocumentReference):
+            raise TypeError("sink_reference must be a DocumentReference")
+        object.__setattr__(self, "zip_members", tuple(self.zip_members))
+        if not all(isinstance(value, ZipMemberIdentity) for value in self.zip_members):
+            raise TypeError("zip_members must contain ZipMemberIdentity values")
+
+
+@dataclass(frozen=True, slots=True)
+class StagedDocument:
+    """Verified plaintext held unpublished until receipt acknowledgement."""
+
+    staging_id: DocumentStagingId = field(repr=False)
+    provenance: RetrievalProvenance
+    content_sha256: ContentSha256
+    size_bytes: int
+    zip_members: tuple[ZipMemberIdentity, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.staging_id, DocumentStagingId):
+            raise TypeError("staging_id must be a DocumentStagingId")
+        if not isinstance(self.provenance, RetrievalProvenance):
+            raise TypeError("provenance must be RetrievalProvenance")
+        if not isinstance(self.content_sha256, ContentSha256):
+            raise TypeError("content_sha256 must be ContentSha256")
+        if type(self.size_bytes) is not int or self.size_bytes <= 0:
+            raise ConfigurationError("size_bytes must be a positive integer")
         object.__setattr__(self, "zip_members", tuple(self.zip_members))
         if not all(isinstance(value, ZipMemberIdentity) for value in self.zip_members):
             raise TypeError("zip_members must contain ZipMemberIdentity values")
@@ -1032,6 +1759,133 @@ class RetrievalProvenance:
         _require_identifier("bank_host_id", self.bank_host_id)
 
 
+_DOWNLOAD_SESSION_KEYS = frozenset(
+    {
+        "session_id",
+        "request_identity",
+        "phase",
+        "transaction_id",
+        "next_segment",
+        "total_segments",
+        "max_segments",
+        "revision",
+        "receipt_kind",
+        "staged_documents",
+        "published_documents",
+    }
+)
+
+
+def _zip_member_to_mapping(value: ZipMemberIdentity) -> dict[str, Any]:
+    return {
+        "index": value.index,
+        "name_sha256": value.name_sha256.sha256_hex,
+        "content_sha256": value.content_sha256.sha256_hex,
+        "size_bytes": value.size_bytes,
+    }
+
+
+def _zip_member_from_mapping(mapping: Mapping[str, Any]) -> ZipMemberIdentity:
+    return ZipMemberIdentity(
+        mapping["index"],
+        ContentSha256(mapping["name_sha256"]),
+        ContentSha256(mapping["content_sha256"]),
+        mapping["size_bytes"],
+    )
+
+
+def _provenance_to_mapping(value: RetrievalProvenance) -> dict[str, Any]:
+    descriptor = value.descriptor
+    return {
+        "descriptor": {
+            "service_name": descriptor.service_name,
+            "message_name": descriptor.message_name,
+            "message_version": descriptor.message_version,
+            "variant": descriptor.variant,
+            "format": descriptor.format,
+            "service_option": descriptor.service_option,
+            "container_type": descriptor.container_type.value,
+            "scope": descriptor.scope,
+        },
+        "protocol_version": value.protocol.protocol_version,
+        "version_number": value.protocol.version_number,
+        "retrieved_at": value.retrieved_at.isoformat(),
+        "transaction_id_sha256": value.transaction_id_sha256.sha256_hex,
+        "segment_count": value.segment_count,
+        "bank_host_id": value.bank_host_id,
+    }
+
+
+def _provenance_from_mapping(mapping: Mapping[str, Any]) -> RetrievalProvenance:
+    descriptor = mapping["descriptor"]
+    retrieved_at = datetime.fromisoformat(mapping["retrieved_at"])
+    return RetrievalProvenance(
+        BtfDescriptor(
+            descriptor["service_name"],
+            descriptor["message_name"],
+            descriptor["message_version"],
+            descriptor["variant"],
+            descriptor["format"],
+            descriptor["service_option"],
+            ContainerType(descriptor["container_type"]),
+            descriptor["scope"],
+        ),
+        # Rejects state written by a release that pinned another version pair.
+        NegotiatedProtocol(
+            protocol_version=mapping["protocol_version"],
+            version_number=mapping["version_number"],
+        ),
+        retrieved_at,
+        ContentSha256(mapping["transaction_id_sha256"]),
+        mapping["segment_count"],
+        mapping["bank_host_id"],
+    )
+
+
+def _staged_document_to_mapping(value: StagedDocument) -> dict[str, Any]:
+    return {
+        "staging_id": value.staging_id.sha256_hex,
+        "provenance": _provenance_to_mapping(value.provenance),
+        "content_sha256": value.content_sha256.sha256_hex,
+        "size_bytes": value.size_bytes,
+        "zip_members": [_zip_member_to_mapping(member) for member in value.zip_members],
+    }
+
+
+def _staged_document_from_mapping(mapping: Mapping[str, Any]) -> StagedDocument:
+    return StagedDocument(
+        DocumentStagingId(mapping["staging_id"]),
+        _provenance_from_mapping(mapping["provenance"]),
+        ContentSha256(mapping["content_sha256"]),
+        mapping["size_bytes"],
+        tuple(_zip_member_from_mapping(member) for member in mapping["zip_members"]),
+    )
+
+
+def _downloaded_document_to_mapping(value: DownloadedDocument) -> dict[str, Any]:
+    return {
+        "staging_id": value.staging_id.sha256_hex,
+        "provenance": _provenance_to_mapping(value.provenance),
+        "content_sha256": value.content_sha256.sha256_hex,
+        "size_bytes": value.size_bytes,
+        "sink_reference": value.sink_reference.value,
+        "zip_members": [_zip_member_to_mapping(member) for member in value.zip_members],
+    }
+
+
+def _downloaded_document_from_mapping(
+    mapping: Mapping[str, Any],
+) -> DownloadedDocument:
+    return DownloadedDocument(
+        DocumentStagingId(mapping["staging_id"]),
+        _provenance_from_mapping(mapping["provenance"]),
+        ContentSha256(mapping["content_sha256"]),
+        mapping["size_bytes"],
+        DocumentReference(mapping["sink_reference"]),
+        tuple(_zip_member_from_mapping(member) for member in mapping["zip_members"]),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SessionLease:
     """Exclusive caller-store lease used with compare-and-swap session updates."""
@@ -1052,7 +1906,7 @@ class SessionLease:
 
 @dataclass(frozen=True, slots=True)
 class SegmentReference:
-    """Opaque reference to sensitive partial ciphertext in caller-controlled storage."""
+    """Opaque reference to one sensitive protected BTD response."""
 
     value: str = field(repr=False)
 

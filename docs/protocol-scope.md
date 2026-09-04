@@ -42,31 +42,54 @@ remain separate semantic types even when their bytes happen to be identical.
 
 The implementation must not “modernize” protocol algorithms. The following
 parameters were checked against the accepted official 3.0.2 artifact on
-2026-07-15. Crypto code still requires recorded vectors before implementation:
+2026-07-15. Implemented paths currently have synthetic rather than bank or
+certification evidence:
 
 - E002 uses RSA PKCS#1 v1.5 transaction-key transport, a 16-byte AES key,
   AES-128-CBC, an all-zero IV/ICV, and the specified ANSI X9.23/ISO 10126-2
   block padding.
-- A006 uses the EBICS-specific prehash construction, SHA-256, MGF1/SHA-256,
-  exactly 32 bytes of PSS salt, and trailer byte `0xBC`; generic PSS defaults are
-  not acceptable.
+- A006 identifies the INI signature certificate and may appear in discovery
+  data, but the fixed read-only operation set never signs or uploads business
+  order data. There is therefore no A006 signing operation or generic signing
+  escape hatch.
 - X002 uses Canonical XML 1.0, RSA/SHA-256 PKCS#1 v1.5, SHA-256 digests, and the
   exact authenticated-node XPointer semantics. A general XMLDSig verifier may
   not choose references on EBICS Read's behalf.
 
 Unknown algorithm identifiers fail closed.
 
+HPD, HAA, and HKD use the standard segmented download transaction. Each Base64 segment is
+individually conformant and at most 1 MiB; the concatenated value is decoded,
+E002-decrypted, zlib-expanded, and parsed into exact restricted bank parameters
+or BTF services. HPD URLs remain opaque informational values and never replace
+the configured endpoint. Its upload-only PreValidation flag is validated and
+discarded. DownloadableOrderData gates HAA; an authenticated unsupported HPD
+response still permits an HAA attempt because HPD is mandatory in H005 but
+deployed behavior may differ.
+HKD validates the complete customer/subscriber document but publishes only BTD
+services, accounts, and per-user permissions. BTU and signature/amount metadata
+are validated then discarded. Account restrictions preserve absent, empty, and
+nonempty meanings and are projected against the exact BTD customer catalog.
+The H005 X002 selection authenticates transaction and encryption metadata, not
+`OrderData` itself, so payload integrity also depends on verified TLS.
+
 ## BTF/BTD
 
-A `BtfDescriptor` always represents ServiceName, optional Scope, MsgName,
-message version, Variant, Format, ServiceOption, and container type. Scope is
-never hard-coded: callers may supply `AT`, `GLB`, `BIL`, another bank-specific
-token, or omit it.
+A `BtfDescriptor` represents ServiceName, MsgName, and any present optional
+Scope, message version, Variant, Format, ServiceOption, and container type.
+Scope is never hard-coded: callers may supply `AT`, `GLB`, `BIL`, another
+schema-valid two- or three-character token, or omit it. HPD-advertised URLs are
+informational results; they never redirect the configured bank endpoint
+automatically.
 
 BTD is not complete until initialization, transaction-ID validation, ordered
 segment transfer, authenticated response validation, decryption,
 decompression/container extraction, return-code validation, and receipt
 completion all succeed. Partial bytes are never returned as a document.
+Raw (`NONE`) and bounded ZIP containers are supported. XML and SVC container
+framing fails closed because no public definition has been recorded. H005 has
+no portable BTD account-selector parameter, so callers select an advertised BTF
+service and an account selector is rejected before network I/O.
 
 Receipt code `0` is positive and may be sent only after the complete order data
 has been authenticated, decrypted, decompressed, and accepted. Receipt code `1`
@@ -74,6 +97,12 @@ is the negative path after complete transfer when processing fails. A positive
 receipt response performs the bank's post-processing; a negative receipt skips
 it. An unknown receipt outcome is explicit ambiguous state, never assumed to be
 success.
+
+Local crash recovery does not implement the optional EBICS transaction recovery
+synchronization protocol (3.0.2 section 12.1.2). Ambiguous transport outcomes are
+not blindly replayed; an unknown positive receipt requires explicit operator
+resolution. This is a scoped H005 raw/ZIP client, not every read-only option of
+every EBICS profile.
 
 ## Official artifact policy
 

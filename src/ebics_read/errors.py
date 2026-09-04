@@ -1,6 +1,12 @@
 """Typed, data-minimizing EBICS Read exception hierarchy."""
 
+from __future__ import annotations
+
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import InitializationLetter
 
 
 class EbicsReadError(Exception):
@@ -21,6 +27,15 @@ class ProtocolError(EbicsReadError):
 
 class UnknownReturnCodeError(ProtocolError):
     """Raised when an unrecognized EBICS return code is encountered."""
+
+
+class EbicsReturnCodeError(ProtocolError):
+    """Raised when a valid EBICS response contains a known rejection code."""
+
+    def __init__(self, technical: str, business: str) -> None:
+        self.technical = technical
+        self.business = business
+        super().__init__(f"EBICS request rejected ({technical}/{business})")
 
 
 class UnsupportedProtocolVersionError(ProtocolError):
@@ -44,7 +59,7 @@ class CertificateValidationError(SecurityError):
 
 
 class ReplayError(SecurityError):
-    """Raised for duplicate identifiers, nonces, or replayed responses."""
+    """Raised for a replayed bank transaction or authenticated message."""
 
 
 class XmlSecurityError(SecurityError):
@@ -81,6 +96,17 @@ class TransientTransportError(TransportError):
 
 class AmbiguousTransportError(TransportError):
     """Raised when a request may have reached the bank; never blindly retry."""
+
+
+class AmbiguousInitializationError(AmbiguousTransportError):
+    """INI/HIA may have committed; retain the matching unconfirmed letter."""
+
+    def __init__(self, pending_letter: InitializationLetter) -> None:
+        self.pending_letter = pending_letter
+        super().__init__(
+            "key initialization outcome is ambiguous; do not submit the pending "
+            "letter unless the bank confirms acceptance"
+        )
 
 
 class RetryClassification(str, Enum):

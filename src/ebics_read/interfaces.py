@@ -11,11 +11,13 @@ from .models import (
     AcceptedBankKeyIdentity,
     Bank,
     ContentSha256,
-    DownloadedDocument,
+    DocumentReference,
+    DocumentStagingId,
     DownloadSession,
     RetrievalProvenance,
     SegmentReference,
     SessionLease,
+    TransactionId,
     TrustedBankKeys,
     UntrustedBankKeys,
     ZipMemberIdentity,
@@ -35,9 +37,6 @@ class KeyProvider(Protocol):
 
     def certificate_der(self, purpose: KeyPurpose) -> bytes:
         """Return the H005 X.509 certificate for one subscriber key role."""
-
-    def sign_a006(self, message: bytes) -> bytes:
-        """Produce the exact EBICS A006 signature for order data."""
 
     def sign_x002(self, canonical_signed_info: bytes) -> bytes:
         """Produce the exact EBICS X002 AuthSignature value."""
@@ -92,7 +91,22 @@ class SessionStore(Protocol):
         expected_revision: int | None,
         state: DownloadSession,
     ) -> bool:
-        """Atomically store only when ownership and revision still match."""
+        """Atomically store only the exact next transition at the expected revision."""
+
+    def initialize_transaction(
+        self,
+        lease: SessionLease,
+        expected_revision: int,
+        state: DownloadSession,
+    ) -> bool:
+        """Atomically claim a new bank transaction ID and persist initialized state.
+
+        Every duplicate ID fails as replay. The global claim remains after deletion;
+        ``False`` means the revision no longer matches.
+        """
+
+    def claim_transaction_id(self, transaction_id: TransactionId) -> None:
+        """Durably reject reuse of one authenticated bank transaction ID."""
 
     def delete(self, lease: SessionLease, expected_revision: int) -> bool:
         """Atomically remove completed or invalidated state."""
@@ -102,7 +116,7 @@ class SessionStore(Protocol):
 
 
 class SegmentStore(Protocol):
-    """Caller-controlled encrypted or equivalently protected ciphertext spool."""
+    """Caller-controlled confidentiality- and integrity-protected BTD spool."""
 
     def put_segment(
         self,
@@ -110,7 +124,7 @@ class SegmentStore(Protocol):
         segment_number: int,
         chunks: Iterable[bytes],
     ) -> SegmentReference:
-        """Atomically store one bounded ciphertext segment from streamed chunks."""
+        """Atomically store one bounded BTD response from streamed chunks."""
 
     def iter_segment(
         self, lease: SessionLease, reference: SegmentReference
@@ -123,22 +137,22 @@ class SegmentStore(Protocol):
         """Recover the ordered number/reference index after process restart."""
 
     def discard(self, lease: SessionLease) -> None:
-        """Remove every partial segment for a terminal transaction."""
+        """Idempotently remove every partial segment for a terminal transaction."""
 
 
 class DocumentWriter(Protocol):
-    """One atomic sink transaction; partial output is never a document."""
+    """One restartable sink transaction; partial output is never a document."""
 
     def write(self, chunk: bytes) -> None:
         """Append one bounded verified plaintext chunk."""
 
-    def commit(
+    def stage(
         self,
         content_sha256: ContentSha256,
         size_bytes: int,
         zip_members: tuple[ZipMemberIdentity, ...],
-    ) -> DownloadedDocument:
-        """Atomically publish the document and return its small result record."""
+    ) -> None:
+        """Idempotently finish the write while keeping plaintext unpublished."""
 
     def abort(self) -> None:
         """Discard partial plaintext."""
@@ -147,8 +161,16 @@ class DocumentWriter(Protocol):
 class DocumentSink(Protocol):
     """Caller-controlled destination for streaming verified plaintext."""
 
-    def begin(self, provenance: RetrievalProvenance) -> DocumentWriter:
-        """Start an unpublished atomic document transaction."""
+    def begin(
+        self, staging_id: DocumentStagingId, provenance: RetrievalProvenance
+    ) -> DocumentWriter:
+        """Idempotently restart the named unpublished transaction from byte zero."""
+
+    def publish(self, staging_id: DocumentStagingId) -> DocumentReference:
+        """Idempotently publish the named stage after receipt acknowledgement."""
+
+    def discard(self, staging_id: DocumentStagingId) -> None:
+        """Idempotently remove an unpublished stage before terminal failure."""
 
 
 class OperationControl(Protocol):

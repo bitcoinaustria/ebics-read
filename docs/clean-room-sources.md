@@ -24,6 +24,10 @@ implementation code, tests, fixtures, or internal documentation was inspected.
 - Learned: exact H005 public-key-digest input, H005 version identifiers,
   receipt semantics, return-code source, and fixed A006/X002/E002 parameters
 - Redistribution: not vendored; terms are not clearly MIT-sublicensable
+- Rechecked: 2026-09-05, the official 3.0.2 artifact matched the recorded hash;
+  section 12.1.2 was used to distinguish optional EBICS transaction recovery
+  synchronization from local restart support. Container codes alone do not
+  specify XML/SVC framing.
 
 ### EBICS Schema index — H000/H005/S002
 
@@ -47,6 +51,19 @@ implementation code, tests, fixtures, or internal documentation was inspected.
   not redistribute or resolve the schema over the network and rejects any leaf
   file that does not match the recorded archive-member digest
 - Redistribution: not vendored for the same no-sublicensing ambiguity
+- Rechecked: 2026-09-05, the official archive matched the recorded hash; all
+  12 opt-in H000/H005/S002 compilation and generated-message tests passed.
+- Archive-member SHA-256 values independently rechecked on 2026-08-08:
+  - `ebics_H005.xsd`: `cf9d5d29fac0950f810c2a0018312fe476ab3415d804f5fc00cd4e3aa216136e`
+  - `ebics_hev.xsd`: `0f529a5220181ef8d99876daddafecd70a53717a2826ff13581147d769ec5056`
+  - `ebics_keymgmt_request_H005.xsd`: `7165cd441a0c68f6e93c384de743f97d0d768ac444d1adc6daf89d0e1edb0505`
+  - `ebics_keymgmt_response_H005.xsd`: `9671ccf4282df1a4089f5d61a86378fa78e38d80292550a34422e15aa802ef3f`
+  - `ebics_orders_H005.xsd`: `ce19f0e0b8cdfa05678a9e2123e09634f131107e08552e7a1371e6dbbf82e2f1`
+  - `ebics_request_H005.xsd`: `48838ffd60275549849a7054223085154746b920e5f438cd16878fc62004d874`
+  - `ebics_response_H005.xsd`: `19226688cd598581b37a7b32cb1df874c525aac710f68dbcc10e11b820eabd4d`
+  - `ebics_signature_S002.xsd`: `6fcee44bdb80d656e05f11da86303bb25de2cf545203eef30dffbd6c662f8d93`
+  - `ebics_types_H005.xsd`: `0c94813782e725b7698449f117a8f2e6e47d6560b3df83ca53a720d6f6fc4351`
+  - `xmldsig-core-schema.xsd`: `43f97eddd32ca6df482ff1757cd55d784054fa36cb35d882ddc1e52669a37af6`
 
 ### Common EBICS Implementation Guide index — version 03
 
@@ -135,6 +152,105 @@ committed, redistributed, or covered by this repository's MIT license. Future
 contributors must independently obtain matching artifacts under the publisher's
 terms. National AT/DE/FR/CH mapping artifacts still require individual rights
 review before use or redistribution.
+
+The recorded EBICS 3.0.2 specification, return-code annex, H005 schema archive,
+and Common Implementation Guide were downloaded again to an untracked temporary
+directory on 2026-08-08. Their SHA-256 values matched the entries above. No
+artifact is committed or redistributed.
+
+## Independent public security and encoding standards
+
+The following publisher-hosted standards were retrieved on 2026-08-08. They
+define only general primitives and encodings; EBICS-specific profiles and
+message semantics continue to come exclusively from the recorded EBICS SC
+artifacts.
+
+### W3C XML standards
+
+Terms assessment: public W3C Recommendations used as normative references;
+their text is not vendored or relicensed.
+
+- Canonical XML Version 1.0, W3C Recommendation 15 March 2001
+  - URL: https://www.w3.org/TR/2001/REC-xml-c14n-20010315
+  - Retrieved artifact SHA-256: `09c02ef3bc0f8364b00b16fb06092637c08e8f38cf223d47a5862eacc2956bc0`
+  - Learned: inclusive Canonical XML 1.0 serialization rules
+- XML Signature Syntax and Processing, Second Edition, W3C Recommendation
+  10 June 2008
+  - URL: https://www.w3.org/TR/2008/REC-xmldsig-core-20080610/
+  - Retrieved artifact SHA-256: `be7abe6228142da3d187415a84380a85ec74b5c2fd60e41e7db731647a4a9b21`
+  - Learned: XMLDSig `SignedInfo`, reference digest, signature, and algorithm
+    processing model
+- XML Path Language (XPath) Version 1.0, W3C Recommendation 16 November 1999
+  - URL: https://www.w3.org/TR/1999/REC-xpath-19991116/
+  - Retrieved artifact SHA-256: `bf0d586e06b83cfcd60da4c6fe4c3841d3ecb10d3381e98b83b9e582cd0e9384`
+  - Learned: XPath 1.0 data model and expression semantics used by the
+    EBICS-specific authenticated-node selection profile
+
+### IETF RFCs
+
+Terms assessment: public RFC Editor publications used as normative references
+under the IETF Trust legal provisions; their text is not vendored.
+
+- RFC 8017, PKCS #1 v2.2
+  - URL: https://www.rfc-editor.org/rfc/rfc8017.txt
+  - Retrieved artifact SHA-256: `1e72dc473d18df3fc5598cdc12795a9f18f36f1aef15abc23a55eb0d58151d11`
+  - Learned: RSAES-PKCS1-v1_5, RSASSA-PSS, RSASSA-PKCS1-v1_5, and MGF1
+- RFC 5280, Internet X.509 Public Key Infrastructure Certificate and CRL Profile
+  - URL: https://www.rfc-editor.org/rfc/rfc5280.txt
+  - Retrieved artifact SHA-256: `a2f2628c0a83b873fc4786abd921f9b2c02395954b655d190bf16b831633345d`
+  - Learned: general X.509 certificate and extension validation semantics
+- RFC 4648, Base-N Encodings
+  - URL: https://www.rfc-editor.org/rfc/rfc4648.txt
+  - Retrieved artifact SHA-256: `84e14418f795d503be5f34bf23ce4ebaa119e9ec7c9f667d8caeb111385b178f`
+  - Learned: strict base64 encoding and decoding
+- RFC 1950, ZLIB Compressed Data Format Specification version 3.3
+  - URL: https://www.rfc-editor.org/rfc/rfc1950.txt
+  - Retrieved artifact SHA-256: `8f0475a5c984657bf26277f73df9456c9b97f175084f0c1748f1eb1f0b9b10b9`
+  - Learned: zlib framing and checksum requirements
+- RFC 1951, DEFLATE Compressed Data Format Specification version 1.3
+  - URL: https://www.rfc-editor.org/rfc/rfc1951.txt
+  - Retrieved artifact SHA-256: `5ebf4b5b7fe1c3a0c0ab9aa3ac8c0f3853a7dc484905e76e03b0b0f301350009`
+  - Learned: DEFLATE format and decoding semantics
+- RFC 3339, Date and Time on the Internet: Timestamps
+  - URL: https://www.rfc-editor.org/rfc/rfc3339.txt
+  - Retrieved artifact SHA-256: `9ab2b8864a85dca73a88f49b0927bc7bc85f596926e4fd1890905777924e700a`
+  - Learned: UTC timestamp syntax used at the typed protocol boundary
+
+### NIST cryptographic standards
+
+Terms assessment: public NIST standards used as normative references; their
+text is not vendored.
+
+- FIPS PUB 180-4, Secure Hash Standard
+  - URL: https://csrc.nist.gov/files/pubs/fips/180-4/final/docs/fips180-4.pdf
+  - Retrieved artifact SHA-256: `5b88d70308c95106e713221c7085cbb8e89dc2eb6214d75c885af2f07ffc6b8a`
+  - Learned: SHA-256
+- FIPS PUB 197, Advanced Encryption Standard, updated 9 May 2023
+  - URL: https://csrc.nist.gov/files/pubs/fips/197/final/docs/fips-197.pdf
+  - Retrieved artifact SHA-256: `89c6da9e6cb81ffb7c115752b789ff3dc205acb2b13d6a36ff55acc79e87f61e`
+  - Learned: AES-128
+- NIST SP 800-38A, Recommendation for Block Cipher Modes of Operation
+  - URL: https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38a.pdf
+  - Retrieved artifact SHA-256: `66821162de1e7130c5fb5eedb22140d8d6d013ec51af4550bb095c2a9481a00e`
+  - Learned: CBC mode processing
+
+### ZIP format and standard-library processing
+
+Terms assessment: public format documentation and Python standard-library
+documentation used as references; neither artifact is vendored.
+
+- PKWARE `.ZIP File Format Specification`, APPNOTE 6.3.10
+  - URL: https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
+  - Retrieved: 2026-08-08
+  - Retrieved artifact SHA-256: `0b993022a7d320a0bf704e6980bea36fafd17a6066ab994db0a0c16278a50cd6`
+  - Learned: central-directory metadata, general-purpose encryption flag,
+    compression sizes, uncompressed sizes, and external file attributes
+- Python 3 `zipfile` documentation
+  - URL: https://docs.python.org/3/library/zipfile.html
+  - Retrieved: 2026-08-08
+  - Retrieved artifact SHA-256: `17990f5ebeafab1311f6d7b0d874a4f3bea6ae9fabfb38fa307ff6abbfa87095`
+  - Learned: standard-library archive/member inspection, bounded member reads,
+    CRC validation, directory detection, and unsupported/encrypted-member errors
 
 ## Known implementations excluded as protocol sources
 

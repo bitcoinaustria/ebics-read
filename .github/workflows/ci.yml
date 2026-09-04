@@ -54,18 +54,45 @@ jobs:
         run: python -m ruff check .
       - name: Type check
         run: python -m mypy
+      - name: Type check the reference adapters
+        run: python -m mypy --strict examples/local_provider.py
       - name: Security tests and aggregate coverage
         run: python -m pytest -q
-      - name: Certificate branch coverage
-        run: python -m coverage report --include=src/ebics_read/certificates.py --fail-under=90
-      - name: HEV branch coverage
-        run: python -m coverage report --include=src/ebics_read/hev.py --fail-under=90
-      - name: Transport branch coverage
-        run: python -m coverage report --include=src/ebics_read/transport.py --fail-under=85
-      - name: XML branch coverage
-        run: python -m coverage report --include=src/ebics_read/xml.py --fail-under=90
+      # Per-module branch-coverage floors so no single file can regress behind
+      # the aggregate gate. Floors are a ratchet at the level each module
+      # already reaches; raise them, never lower them.
+      - name: Per-module branch coverage
+        run: |
+          set -eu
+          while read -r module floor; do
+            [ -n "$module" ] || continue
+            echo "::group::$module >= $floor%"
+            python -m coverage report \
+              --include="src/ebics_read/$module" --fail-under="$floor"
+            echo "::endgroup::"
+          done <<'FLOORS'
+          backend.py 83
+          btd.py 84
+          certificates.py 90
+          client.py 90
+          e002.py 95
+          h005.py 90
+          haa.py 81
+          hev.py 90
+          hia.py 95
+          hkd.py 78
+          hpb.py 85
+          hpd.py 90
+          htd.py 95
+          ini.py 95
+          models.py 82
+          runtime.py 85
+          transport.py 85
+          x002.py 85
+          xml.py 90
+          FLOORS
       - name: Compile
-        run: python -m compileall -q src tests
+        run: python -m compileall -q src tests examples
       - name: Dependency audit
         run: python -m pip_audit --skip-editable
 

@@ -13,10 +13,13 @@ from ebics_read import (
     CapabilityDiscovery,
     ContainerType,
     ContentSha256,
+    DocumentReference,
+    DocumentStagingId,
     DownloadedDocument,
     DownloadOptions,
     EbicsPublicKeyDigest,
     InitializationLetter,
+    KeyProvider,
     NegotiatedProtocol,
     OrderType,
     ProtocolVersion,
@@ -104,16 +107,19 @@ class RecordingBackend:
         subscriber: Subscriber,
         protocol: NegotiatedProtocol,
         trusted_bank_keys: TrustedBankKeys,
+        session_id: str,
         descriptor: BtfDescriptor,
         options: DownloadOptions,
         sink: object,
         control: object,
     ) -> tuple[DownloadedDocument, ...]:
         assert protocol == NegotiatedProtocol()
+        assert session_id == "resume-1"
         self.calls.append("BTD")
         self.controls.append(control)
         return (
             DownloadedDocument(
+                staging_id=DocumentStagingId("E" * 64),
                 provenance=RetrievalProvenance(
                     descriptor=descriptor,
                     protocol=NegotiatedProtocol(),
@@ -124,7 +130,7 @@ class RecordingBackend:
                 ),
                 content_sha256=ContentSha256.from_bytes(b"opaque-synthetic-document"),
                 size_bytes=len(b"opaque-synthetic-document"),
-                sink_reference="synthetic-document-1",
+                sink_reference=DocumentReference("synthetic-document-1"),
             ),
         )
 
@@ -210,6 +216,7 @@ def test_public_client_has_only_explicit_protocol_operations() -> None:
         "initialize_auth_encryption_keys",
         "initialize_signature_key",
         "probe_versions",
+        "resolve_ambiguous_receipt",
     }
     forbidden = {
         "execute",
@@ -223,6 +230,19 @@ def test_public_client_has_only_explicit_protocol_operations() -> None:
         "btu",
     }
     assert forbidden.isdisjoint(ebics_read.__all__)
+
+
+def test_key_provider_has_no_business_signature_or_generic_crypto_escape() -> None:
+    methods = {
+        name
+        for name, value in inspect.getmembers(KeyProvider, inspect.isfunction)
+        if not name.startswith("_")
+    }
+    assert methods == {
+        "certificate_der",
+        "decrypt_e002_transaction_key",
+        "sign_x002",
+    }
 
 
 def test_every_network_operation_requires_caller_control() -> None:
@@ -245,6 +265,11 @@ def test_every_network_operation_requires_caller_control() -> None:
                 getattr(ebics_read.ReadOnlyBackend, operation)
             ).parameters
         )
+    assert "session_id" in inspect.signature(ReadOnlyClient.download).parameters
+    assert (
+        "session_id"
+        in inspect.signature(ebics_read.ReadOnlyBackend.download).parameters
+    )
 
 
 def test_initialization_is_explicit_and_not_a_business_upload(
@@ -269,13 +294,13 @@ def test_hpb_keys_are_untrusted_until_oob_acceptance(
     candidate = value.fetch_bank_keys(control)  # type: ignore[arg-type]
 
     with pytest.raises(ebics_read.BankKeyNotTrustedError):
-        value.download(descriptor, DummySink(), control)  # type: ignore[arg-type]
+        value.download("resume-1", descriptor, DummySink(), control)  # type: ignore[arg-type]
     assert backend.calls == ["HEV", "HPB"]
 
     expected = synthetic_out_of_band_identity(candidate)
     value.accept_bank_keys(candidate, expected)
     documents = value.download(  # type: ignore[arg-type]
-        descriptor, DummySink(), control
+        "resume-1", descriptor, DummySink(), control
     )
 
     assert documents[0].content_sha256 == ContentSha256.from_bytes(
@@ -289,3 +314,6 @@ def test_generic_request_parameter_mapping_no_longer_exists() -> None:
     assert "DownloadRequest" not in ebics_read.__all__
     assert not hasattr(ebics_read, "DownloadRequest")
     assert "parameters" not in inspect.signature(BtfDescriptor).parameters
+    assert hasattr(ebics_read.DocumentWriter, "stage")
+    assert not hasattr(ebics_read.DocumentWriter, "commit")
+    assert hasattr(ebics_read.DocumentSink, "publish")

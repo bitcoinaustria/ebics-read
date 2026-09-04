@@ -62,6 +62,23 @@ match the bank's out-of-band values.
   rejects mixed content, conflicting or duplicate advertisements, and never
   falls back to H004. Every subsequent backend call receives that exact
   negotiated protocol value.
+- INI accepts only a validated self-signed A006 signature certificate and emits
+  one fixed H005/S002 request with no nonce, X002, E002, caller order data, or
+  generic body input. Its intentionally unsigned response is TLS-only, requires
+  exact success and an order ID, and preserves known rejection codes. An
+  ambiguous attempt raises a non-retryable typed error carrying the exact
+  pending letter, which must not be submitted unless the bank confirms it
+  accepted that attempt.
+- HIA applies the same unsigned-response and ambiguity controls to fixed X002
+  authentication and E002 encryption certificates. It allows their normative
+  dual-use key case but rejects either role reusing the A006 signature key, and
+  exposes no caller-controlled XML, version, or order field.
+- Common H005 parsing distinguishes the fixed standard and key-management
+  response roots, accepts only H005 with its schema-optional revision omitted or
+  set to 1, requires authenticated markers, preserves
+  the tree for later X002 verification, and rejects return codes outside the
+  contextual technical/business Annex 1 allowlists. Parsed fields remain
+  explicitly unauthenticated until X002 verification is complete.
 - Strict DER X.509 profile validation checks RSA algorithm/strength, validity,
   self-signature, SPKI OID, serial/validity bounds, authority-key identity,
   required and forbidden extensions/key usage, and cross-role key reuse before
@@ -73,33 +90,62 @@ match the bank's out-of-band values.
   positive receipt is unreachable until authentication, decryption, and bounded
   container validation have completed; negative and ambiguous receipt outcomes
   have distinct states.
-- Session revisions require lease/CAS storage, partial ciphertext has a protected
-  caller-spool contract with a recoverable number/reference index, documents
-  stream to an atomic sink, and results carry a content hash plus sanitized
-  provenance rather than large in-memory byte tuples. Transport timeouts are
+- An ambiguous positive receipt is never resolved automatically in either
+  direction: publishing would assert delivery the library cannot prove, and
+  discarding would destroy data the bank may already consider fetched.
+  `resolve_ambiguous_receipt` requires the operator to supply the bank's answer
+  explicitly, as a keyword-only argument, and refuses any session that is not in
+  that state. Both outcomes discard the spool and release the lease, so an
+  unresolved session cannot accumulate sensitive state indefinitely.
+- Persisted download state is untrusted input. `from_mapping` rebuilds it through
+  the same validated constructor as every in-memory transition, so tampered
+  phases, revisions, segment counts, transaction IDs, or protocol versions fail
+  closed rather than resuming a forged session.
+- Session revisions require lease/CAS storage and each session is bound to a
+  hidden download-request identity. Protected raw response fragments have a
+  caller-spool contract with a recoverable number/reference index. Verified
+  plaintext is staged under a deterministic idempotency key, then published
+  only after the positive receipt response; both sides of publication are
+  resumable. The sink returns opaque references rather than verified metadata.
+  Receipt intent is persisted before I/O, and generic CAS accepts only exact
+  successor states. Results carry a content hash plus sanitized provenance
+  rather than large in-memory byte tuples. Transport timeouts are
   capped by the operation deadline and cancellation is checked around I/O. The
-  same caller control reaches every network-facing method and covers HEV plus
-  the operation that follows it.
+  same caller control reaches every network-facing method, covers HEV plus the
+  operation that follows it, and checkpoints BTD spool verification, decoding,
+  decompression, extraction, staging, and publication.
 - Retry classification treats only explicit transient transport interruptions as
   retryable when the transport proves no bytes were sent. Default network
   interruptions are ambiguous; security and protocol failures are terminal.
 - Core modules contain no logging calls or event payloads.
 - Sensitive model fields are omitted from representations.
 
-## Required controls before protocol completion
+## Protocol controls enforced
 
-- Verify X002 AuthSignature and all authenticated digests before reading
-  response metadata or order data.
-- Select exactly the authenticated nodes required by the normative XPointer;
-  reject wrapping, namespace substitution, missing nodes, and duplicates.
-- Reject unknown algorithms and return codes.
-- Track nonces, request IDs, timestamps, transaction IDs, and completed receipts
-  to detect replay.
-- Enforce segment count/order/completeness, compressed and decompressed sizes,
-  ZIP members, member paths, member sizes, and compression ratios.
-- Apply phase-specific handling of ambiguous transport outcomes in the future
-  executable BTD state machine; never blindly replay them.
-- Add deterministic official crypto vectors before any live use.
+- Fixed operation-specific shape and authentication-marker validation runs before
+  accepting fields from an X002-verified response. The common X002 verifier
+  already fixes the XPointer, algorithms, transforms, element order, digest,
+  canonicalization, and pinned-bank RSA verification.
+- Unknown algorithms are rejected.
+- Every signed initial request uses a fresh 128-bit nonce and timestamp;
+  treat `EBICS_TX_MESSAGE_REPLAY` as a security failure rather than silently
+  retrying it.
+- BTD atomically claims each authenticated bank transaction ID in the same
+  operation that records initialized state. Discovery durably claims the ID
+  before transfer. Claims remain after completed, failed, or ambiguous outcomes.
+- Limits are enforced for segment count/order/completeness, compressed and
+  decompressed sizes, ZIP members, member paths, member sizes, and compression
+  ratios.
+- BTD applies phase-specific handling of ambiguous transport outcomes and never
+  blindly replays them.
+- `DownloadRequestIdentity` is derived from the exact bank, subscriber, negotiated
+  protocol, pinned bank keys, descriptor, and download options before storing
+  or resuming a session.
+- Each deterministic `DocumentStagingId` is derived from the bound request identity,
+  globally claimed authenticated transaction ID, and stable document position
+  before beginning sink I/O. If its session transition is not persisted, discard
+  that unpublished stage before terminal failure; recompute and discard it after
+  a crash.
 
 ## Residual risks
 
@@ -110,12 +156,21 @@ match the bank's out-of-band values.
 - Caller-supplied providers may violate their contracts.
 - Bank profiles and national BTF mappings vary and may be incompletely
   discoverable.
+- Cryptographic paths have synthetic and normative-document evidence, but no
+  separately published official vector suite or live-bank evidence.
 - Agent review does not replace an external human security audit.
 
 ## Adversarial agent review log
 
-No protocol-crypto review has occurred because XML signature verification is
-not implemented.
+X002, E002, INI, HIA, HPB, HPD, HAA, HKD, HTD, and the BTD envelope, recovery,
+processing, receipt, and publication slices received focused review-only agent
+passes after implementation; these are agent reviews, not external human
+security audits.
+INI review findings on its clock boundary, one-message size limit, and exact
+protocol type, retry ambiguity, certificate profile, and letter identity were
+corrected before commit.
+HIA review findings on duplicate-key semantics, retry coverage, E002 common
+name, and role documentation were corrected before commit.
 
 On 2026-07-15, a separate fresh-context agent session that did not write the
 foundation was instructed to find breaks and not fix them. This was agent-only
@@ -142,9 +197,9 @@ additional edge cases:
 The same reviewer then performed a final verification: all 25 targeted invalid
 cases were rejected, the valid session path still reached `VERIFIED`, all 34
 tests passed, and no actionable foundation finding remained.
-XML signature verification remains the highest-risk unimplemented component;
-it requires a new adversarial review by a session that did not implement it
-before the Experimental release gate can pass.
+XML signature verification remains a high-risk component despite synthetic
+negative coverage and focused non-author agent review; the Experimental release
+gate still requires resolved or explicitly accepted fresh-context findings.
 
 ### Foundation-correction review
 
