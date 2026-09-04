@@ -4,6 +4,21 @@ All notable changes will be recorded here. The project has made no release.
 
 ## Unreleased
 
+### Fixed
+
+- Generated subscriber signature certificates now carry the A006 key usage
+  required by INI/HIA; a synthetic enrollment test covers both operations.
+- Subscriber generation refuses existing or partial key directories instead of
+  replacing registered keys, and rejects unsupported key sizes before writing.
+- Reference bank-key pins are scoped to both endpoint and HostID.
+- Reference session stores hold OS locks throughout each lease, reject expired
+  access and serialize compare-and-swap operations across threads and processes.
+- Reference state, replay claims and staged documents are flushed before
+  progressing; POSIX directory changes are synchronized after atomic renames.
+- The setup runbook supplies the bank name, protects initialization letters,
+  refreshes expired operation deadlines and distinguishes resume from a fresh
+  statement retrieval. A bank-pilot guide documents remaining evidence gates.
+
 ### Changed
 
 - Renamed the pre-release project, repository, and distribution from `ebicsmit`

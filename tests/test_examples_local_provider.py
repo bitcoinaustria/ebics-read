@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from test_btd import _descriptor
 from test_haa import _TRANSACTION_KEY, _certificate, _fragments, _Transport
+from test_ini import _ini_response as _initialization_response
 
 from ebics_read import (
     Bank,
@@ -34,6 +35,7 @@ from ebics_read import (
     EbicsBackend,
     KeyPurpose,
     NegotiatedProtocol,
+    OrderType,
     ProtocolLimits,
     ReadOnlyClient,
     ReplayError,
@@ -46,6 +48,7 @@ from ebics_read import (
 )
 from ebics_read.models import BankKeyRole
 from ebics_read.testing import synthetic_out_of_band_identity
+from ebics_read.transport import TransportResponse
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "examples"))
 
@@ -61,6 +64,58 @@ from local_provider import (
 _DOCUMENT = b"synthetic camt.053 document delivered through file-backed adapters"
 _BANK = Bank("https://bank.invalid/ebics", "HOST")
 _SUBSCRIBER = Subscriber("PARTNER=1", "USER,1", "SYSTEM1")
+
+
+def test_key_generation_never_replaces_existing_or_partial_keys(tmp_path: Path) -> None:
+    directory = tmp_path / "keys"
+    generate_subscriber_keys(directory)
+    original = {path.name: path.read_bytes() for path in directory.iterdir()}
+    with pytest.raises(FileExistsError):
+        generate_subscriber_keys(directory)
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == original
+
+    (directory / "authentication.cert.der").unlink()
+    partial = {path.name: path.read_bytes() for path in directory.iterdir()}
+    with pytest.raises(FileExistsError):
+        generate_subscriber_keys(directory)
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == partial
+
+
+@pytest.mark.parametrize("key_size", [1024, 8192, True, 2048.0])
+def test_invalid_key_size_does_not_leave_partial_setup(
+    tmp_path: Path, key_size: int
+) -> None:
+    directory = tmp_path / "keys"
+    with pytest.raises(ValueError, match="key size"):
+        generate_subscriber_keys(directory, key_size=key_size)
+    assert not directory.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX ownership and mode bits")
+def test_reference_storage_rejects_public_directories(tmp_path: Path) -> None:
+    directory = tmp_path / "public"
+    directory.mkdir(mode=0o755)
+    with pytest.raises(ValueError, match="private"):
+        FileBankKeyTrustStore(directory)
+
+
+def test_staging_sync_failure_prevents_acceptance(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from local_provider import FileDocumentWriter
+
+    path = tmp_path / "statement.part"
+    writer = FileDocumentWriter(path)
+    writer.write(_DOCUMENT)
+
+    def disk_failure(descriptor: int) -> None:
+        raise OSError("synthetic disk sync failure")
+
+    monkeypatch.setattr(os, "fsync", disk_failure)
+    try:
+        with pytest.raises(OSError, match="synthetic disk sync failure"):
+            writer.stage(ContentSha256.from_bytes(_DOCUMENT), len(_DOCUMENT), ())
+    finally:
+        writer.abort()
+    assert not path.exists()
 
 
 @dataclass(frozen=True)
@@ -295,7 +350,8 @@ def test_generated_subscriber_keys_are_three_distinct_roles(tmp_path: Path) -> N
         certificate = x509.load_der_x509_certificate(der)
         usage = certificate.extensions.get_extension_for_class(x509.KeyUsage).value
         assert usage.key_encipherment is (purpose is KeyPurpose.ENCRYPTION)
-        assert usage.digital_signature is (purpose is not KeyPurpose.ENCRYPTION)
+        assert usage.digital_signature is (purpose is KeyPurpose.AUTHENTICATION)
+        assert usage.content_commitment is (purpose is KeyPurpose.SIGNATURE)
     # Private key files must not be group- or world-readable. Windows has no
     # POSIX mode bits to assert on; chmod there only toggles the read-only flag.
     if os.name == "posix":
@@ -310,6 +366,48 @@ def test_generated_subscriber_keys_are_three_distinct_roles(tmp_path: Path) -> N
     public_key.verify(  # type: ignore[union-attr]
         provider.sign_x002(signed), signed, padding.PKCS1v15(), hashes.SHA256()
     )
+
+
+def test_generated_keys_complete_ini_and_hia(tmp_path: Path) -> None:
+    generate_subscriber_keys(tmp_path / "keys")
+
+    class InitializationTransport:
+        def __init__(self) -> None:
+            self.orders: list[OrderType] = []
+
+        def exchange(self, request, control):  # type: ignore[no-untyped-def]
+            control.raise_if_cancelled()
+            self.orders.append(request.order)
+            return TransportResponse(_initialization_response())
+
+    transport = InitializationTransport()
+    backend = EbicsBackend(
+        transport,  # type: ignore[arg-type]
+        key_provider=FileKeyProvider(tmp_path / "keys"),
+        clock=SystemClock(),
+    )
+    bank = Bank("https://bank.invalid/ebics", "HOST", "Synthetic bank")
+    control = DeadlineControl.after(30, SystemClock())
+    ini = backend.initialize_signature_key(
+        bank, _SUBSCRIBER, NegotiatedProtocol(), control
+    )
+    hia = backend.initialize_auth_encryption_keys(
+        bank, _SUBSCRIBER, NegotiatedProtocol(), control
+    )
+    assert transport.orders == [OrderType.INI, OrderType.HIA]
+    assert ini.content and hia.content
+
+
+def test_bank_key_pins_are_scoped_to_endpoint_and_host(prepared: _Deployment) -> None:
+    store = FileBankKeyTrustStore(prepared.root / "trust")
+    original = store.require_trusted(_BANK)
+    for other in (
+        Bank("https://other-bank.invalid/ebics", _BANK.host_id),
+        Bank(_BANK.endpoint, "OTHER"),
+    ):
+        with pytest.raises(BankKeyNotTrustedError):
+            store.require_trusted(other)
+    assert store.require_trusted(_BANK) == original
 
 
 def test_reference_adapters_stay_outside_the_distribution() -> None:

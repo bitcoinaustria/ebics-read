@@ -64,6 +64,11 @@ conformance.
 
 ## Getting started
 
+Before requesting access, use the [bank-pilot guide](docs/bank-pilot.md) to agree
+on the supported protocol, certificate profile, statement service and test
+procedure. It includes a draft inquiry and distinguishes implemented paths from
+the live evidence still needed.
+
 Six seams are deliberately not implemented here, because keys, durable state and
 document storage are application decisions: `KeyProvider`, `BankKeyTrustStore`,
 `SessionStore`, `SegmentStore`, `DocumentSink`, and `OperationControl`. Only the

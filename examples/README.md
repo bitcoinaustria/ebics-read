@@ -20,6 +20,22 @@ Confidentiality is filesystem permissions only. On a shared host, or on a disk
 that is not already encrypted, wrap the spool and the key loader in an AEAD or a
 KMS/HSM client before using any of this.
 
+Use a local filesystem. The session adapter holds an OS lock for the whole
+lease; an expired deadline never allows another worker to steal a live lock.
+Process exit releases the lock, so a restarted worker can recover safely. The
+`locks` directory intentionally keeps empty lock records permanently: never
+delete these while workers may be running. State, replay claims, document data
+and directory entries are synchronized before progressing on POSIX. Windows
+directory durability and access control need host-specific provision; mode bits
+alone do not configure Windows ACLs. Network filesystems and power-loss recovery
+on Windows have not been validated. Staging and publication must be on the same
+filesystem for atomic rename.
+
+Existing POSIX storage directories must already belong to the current user and
+exclude group/other permissions. Previously stored example bank pins keyed only
+by HostID are not migrated: repeat the independent digest comparison to accept
+pins for the exact endpoint and HostID.
+
 ## First run
 
 ```python
@@ -49,11 +65,18 @@ from local_provider import (
 )
 
 state = Path("~/.ebics-read").expanduser()
-generate_subscriber_keys(state / "keys")  # once, then back this up
+state.mkdir(mode=0o700, parents=True, exist_ok=True)
+# Run only during first enrollment, then back up the protected directory.
+# Existing directories, including partial setup, are deliberately rejected.
+generate_subscriber_keys(state / "keys")
 
 clock = SystemClock()
 client = ReadOnlyClient(
-    Bank("https://ebics.example-bank.invalid/ebics", "BANKHOSTID"),
+    Bank(
+        "https://ebics.example-bank.invalid/ebics",
+        "BANKHOSTID",
+        institution_name="Example Bank",
+    ),
     Subscriber("PARTNERID", "USERID", None),
     EbicsBackend(
         HttpsTransport(clock=clock),
@@ -75,12 +98,21 @@ control = DeadlineControl.after(60, clock)
 protocol = client.probe_versions(control)  # HEV; reuse it below
 
 ini = client.initialize_signature_key(control, protocol)
+# These contain participant identifiers and certificates. Keep them in the
+# protected state directory outside the repository, never in logs or chat.
+with (state / "ini-letter.txt").open("xb") as letter:
+    letter.write(ini.content)
 hia = client.initialize_auth_encryption_keys(control, protocol)
-Path("ini-letter.txt").write_bytes(ini.content)
-Path("hia-letter.txt").write_bytes(hia.content)
+with (state / "hia-letter.txt").open("xb") as letter:
+    letter.write(hia.content)
 ```
 
-Print, sign and post both letters. Wait for the bank to activate the subscriber.
+Deliver both signed letters using the procedure agreed with the bank. Wait for
+the bank to activate the subscriber. Do not generate new keys or repeat INI/HIA
+when reopening the application. If initialization raises
+`AmbiguousInitializationError`, its `pending_letter` preserves the submitted
+key's letter; retain it privately and clarify acceptance with the bank before
+submitting the letter or retrying.
 Passing `protocol` into each call is optional; without it every operation pays
 for another HEV round trip.
 
@@ -93,6 +125,9 @@ security document. Typing the digests the same connection served you pins an
 attacker's keys just as happily as the bank's.
 
 ```python
+# Activation may take days: start a fresh deadline and negotiate again.
+control = DeadlineControl.after(60, clock)
+protocol = client.probe_versions(control)
 candidate = client.fetch_bank_keys(control, protocol)
 client.accept_bank_keys(
     candidate,
@@ -108,19 +143,37 @@ Rotation requires the same explicit comparison again.
 ## Downloading
 
 ```python
+descriptor = BtfDescriptor(
+    service_name="EOP",
+    message_name="camt.053",
+    message_version="08",
+    variant=None,
+    format=None,
+    service_option=None,
+    container_type=ContainerType.ZIP,
+    scope=None,
+)
+sink = FileDocumentSink(state / "staging", state / "documents")
 documents = client.download(
     "2026-08-statements",  # your own resumable session ID
-    BtfDescriptor("EOP", "camt.053", "08", None, None, None, ContainerType.ZIP),
-    FileDocumentSink(state / "staging", state / "documents"),
+    descriptor,
+    sink,
     DeadlineControl.after(600, clock),
     protocol=protocol,
 )
 ```
 
-Reuse the same session ID to resume an interrupted download. Everything is
-idempotent: a completed session returns its documents without contacting the
-bank. Ask the bank which BTF service parameters it expects, or read them from
-`client.discover_capabilities(control, protocol)`.
+The descriptor above is illustrative, not a bank-specific service mapping. Ask
+the bank for its exact BTF parameters (including scope and container), or inspect
+`client.discover_capabilities(DeadlineControl.after(60, clock), protocol)`.
+`NONE` and `ZIP` are supported; XML/SVC framing is not implemented. The downloaded
+bytes remain opaque: parsing statements and importing payments belongs to your app.
+
+Reuse the same session ID and arguments to resume an interrupted download. With
+`protocol` supplied, a completed session returns its documents without network
+I/O; otherwise the client first performs HEV. Use a **new session ID for every
+new retrieval**, even for the same account and BTF descriptor, or you will keep
+getting the earlier result. Reconcile overlapping statement periods in your app.
 
 ## When a receipt outcome is unknown
 
@@ -135,7 +188,7 @@ documents = client.resolve_ambiguous_receipt(
     "2026-08-statements",
     descriptor,
     sink,
-    control,
+    DeadlineControl.after(60, clock),
     bank_confirmed_acceptance=True,  # the bank recorded it: publish
     protocol=protocol,
 )

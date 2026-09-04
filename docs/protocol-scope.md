@@ -98,6 +98,12 @@ receipt response performs the bank's post-processing; a negative receipt skips
 it. An unknown receipt outcome is explicit ambiguous state, never assumed to be
 success.
 
+Local crash recovery does not implement the optional EBICS transaction recovery
+synchronization protocol (3.0.2 section 12.1.2). Ambiguous transport outcomes are
+not blindly replayed; an unknown positive receipt requires explicit operator
+resolution. This is a scoped H005 raw/ZIP client, not every read-only option of
+every EBICS profile.
+
 ## Official artifact policy
 
 EBICS SC download terms do not clearly grant downstream MIT-compatible

@@ -24,6 +24,10 @@ implementation code, tests, fixtures, or internal documentation was inspected.
 - Learned: exact H005 public-key-digest input, H005 version identifiers,
   receipt semantics, return-code source, and fixed A006/X002/E002 parameters
 - Redistribution: not vendored; terms are not clearly MIT-sublicensable
+- Rechecked: 2026-09-05, the official 3.0.2 artifact matched the recorded hash;
+  section 12.1.2 was used to distinguish optional EBICS transaction recovery
+  synchronization from local restart support. Container codes alone do not
+  specify XML/SVC framing.
 
 ### EBICS Schema index — H000/H005/S002
 
@@ -47,6 +51,8 @@ implementation code, tests, fixtures, or internal documentation was inspected.
   not redistribute or resolve the schema over the network and rejects any leaf
   file that does not match the recorded archive-member digest
 - Redistribution: not vendored for the same no-sublicensing ambiguity
+- Rechecked: 2026-09-05, the official archive matched the recorded hash; all
+  12 opt-in H000/H005/S002 compilation and generated-message tests passed.
 - Archive-member SHA-256 values independently rechecked on 2026-08-08:
   - `ebics_H005.xsd`: `cf9d5d29fac0950f810c2a0018312fe476ab3415d804f5fc00cd4e3aa216136e`
   - `ebics_hev.xsd`: `0f529a5220181ef8d99876daddafecd70a53717a2826ff13581147d769ec5056`
